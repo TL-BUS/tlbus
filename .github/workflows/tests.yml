@@ -3,7 +3,9 @@ name: tests
 on:
   push:
     branches:
+      - "20*"
       - main
+      - master
   pull_request:
   workflow_dispatch:
 
@@ -31,4 +33,3 @@ jobs:
 
       - name: Run tests
         run: cargo test --workspace --all-targets
-

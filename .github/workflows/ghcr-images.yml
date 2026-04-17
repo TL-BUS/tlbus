@@ -3,7 +3,9 @@ name: ghcr images
 on:
   push:
     branches:
+      - "20*"
       - main
+      - master
     tags:
       - "20*"
   workflow_dispatch:

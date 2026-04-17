@@ -5,6 +5,10 @@
 ![Docs EN](https://img.shields.io/badge/docs-EN-2563eb.svg)
 ![Docs IT](https://img.shields.io/badge/docs-IT-2563eb.svg)
 
+<p align="center">
+  <img src="assets/tlbus.png" alt="Logo TL-Bus" width="420">
+</p>
+
 > Un bus messaggi in Rust per microservizi, con routing, lineage e federation tenuti espliciti.
 
 TL-Bus e` organizzato come workspace Rust per sistemi message-driven. E` pensato per team che vogliono il bus visibile e facile da debuggare, invece di nasconderlo dentro un framework troppo opaco.
