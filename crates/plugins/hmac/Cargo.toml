@@ -1,0 +1,12 @@
+[package]
+name = "tlbus-plugin-hmac"
+edition.workspace = true
+license.workspace = true
+version.workspace = true
+
+[dependencies]
+hex.workspace = true
+hmac.workspace = true
+sha2.workspace = true
+tlbus-core = { path = "../../core" }
+

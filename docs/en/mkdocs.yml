@@ -1,0 +1,10 @@
+site_name: TL-Bus Documentation
+docs_dir: docs
+
+nav:
+  - Home: index.md
+  - About: about/index.md
+  - Tutorial: tutorial/index.md
+  - Reference: reference/index.md
+  - Resources: resources/index.md
+

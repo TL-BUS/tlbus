@@ -1,0 +1,20 @@
+[package]
+name = "tlbus-bridge"
+edition.workspace = true
+license.workspace = true
+version.workspace = true
+
+[[bin]]
+name = "tlbus-bridge"
+path = "src/main.rs"
+
+[dependencies]
+bytes.workspace = true
+h2.workspace = true
+http.workspace = true
+rmp-serde.workspace = true
+tokio.workspace = true
+tlbus-core = { path = "../core" }
+
+[dev-dependencies]
+tempfile.workspace = true

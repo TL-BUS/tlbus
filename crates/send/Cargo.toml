@@ -1,0 +1,17 @@
+[package]
+name = "tlbus-send"
+edition.workspace = true
+license.workspace = true
+version.workspace = true
+
+[[bin]]
+name = "tlbus-send"
+path = "src/main.rs"
+
+[dependencies]
+tokio.workspace = true
+tlbus-core = { path = "../core" }
+
+[dev-dependencies]
+tempfile.workspace = true
+

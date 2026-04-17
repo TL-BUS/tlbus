@@ -1,0 +1,18 @@
+[package]
+name = "tlbus-sidecar"
+edition.workspace = true
+license.workspace = true
+version.workspace = true
+
+[[bin]]
+name = "tlbus-sidecar"
+path = "src/main.rs"
+
+[dependencies]
+tokio.workspace = true
+tlbus-bridge = { path = "../bridge" }
+tlbus-core = { path = "../core" }
+tlbus-daemon = { path = "../daemon" }
+
+[dev-dependencies]
+tempfile.workspace = true

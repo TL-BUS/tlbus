@@ -1,0 +1,9 @@
+[package]
+name = "tlbus-plugin-auth"
+edition.workspace = true
+license.workspace = true
+version.workspace = true
+
+[dependencies]
+tlbus-core = { path = "../../core" }
+

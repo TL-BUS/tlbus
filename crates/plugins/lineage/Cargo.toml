@@ -1,0 +1,10 @@
+[package]
+name = "tlbus-plugin-lineage"
+edition.workspace = true
+license.workspace = true
+version.workspace = true
+
+[dependencies]
+tlbus-core = { path = "../../core" }
+uuid.workspace = true
+

@@ -1,0 +1,21 @@
+[package]
+name = "tlbus-daemon"
+edition.workspace = true
+license.workspace = true
+version.workspace = true
+
+[[bin]]
+name = "tlbus-daemon"
+path = "src/main.rs"
+
+[dependencies]
+tokio.workspace = true
+tlbus-core = { path = "../core" }
+tlbus-plugin-auth = { path = "../plugins/auth" }
+tlbus-plugin-hmac = { path = "../plugins/hmac" }
+tlbus-plugin-lineage = { path = "../plugins/lineage" }
+tlbus-plugin-manifest = { path = "../plugins/manifest" }
+
+[dev-dependencies]
+serde_json.workspace = true
+tempfile.workspace = true
