@@ -91,7 +91,22 @@ The repository publishes two Docker images to GitHub Container Registry through
 Release tags are calendar-style tags such as `2026.0.1` and are pushed when the Git tag starts with `20`.
 `latest` still tracks the default branch.
 
-The images are built from [Dockerfile.ghcr](/Users/archetipo/devel/microservices/projects/TL-Bus%20Project/tlbus/Dockerfile.ghcr).
+## Local Docker Build
+
+The canonical build definition is [Dockerfile](/Users/archetipo/devel/microservices/projects/TL-Bus%20Project/tlbus/Dockerfile).
+`Dockerfile.ghcr` is an alias used by the GitHub publish workflow and points to the same file.
+
+Build the core daemon image locally:
+
+```bash
+docker build -f Dockerfile --target tlbusd-runtime -t tlbusd:local .
+```
+
+Build the federation image locally:
+
+```bash
+docker build -f Dockerfile --target tlbusnet-runtime -t tlbusnet:local .
+```
 
 ## Documentation
 
