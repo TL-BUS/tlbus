@@ -74,10 +74,12 @@ async fn run() -> Result<()> {
         .ok()
         .filter(|value| !value.trim().is_empty())
         .map(String::into_bytes);
+
     let plugin_names = plugin_names_from_env(
         env::var("TLBUS_PLUGINS").ok().as_deref(),
-        hmac_key.is_some(),
+        hmac_key.as_ref().is_some_and(|key| !key.is_empty()),
     );
+
     let router = Router::from_routes(routes);
     let pipeline = build_pipeline(router.clone(), &plugin_names, hmac_key)?;
 
@@ -86,6 +88,7 @@ async fn run() -> Result<()> {
     if let Some(service_socket_dir) = service_socket_dir {
         config = config.with_service_socket_dir(service_socket_dir);
     }
+
     match (local_pool, bridge_socket) {
         (Some(local_pool), Some(bridge_socket)) => {
             config = config.with_federation(FederationConfig {
@@ -101,8 +104,7 @@ async fn run() -> Result<()> {
         }
     }
 
-    let daemon = Daemon::new(config);
-    daemon.serve().await
+    Daemon::new(config).serve().await
 }
 
 fn parse_route_arg(arg: &str) -> Result<(String, PathBuf)> {
@@ -125,7 +127,11 @@ fn print_usage() {
     eprintln!(
         "usage: tlbus-daemon [--listen /run/tlb.sock] [--service-socket-dir /run/tlbus] [--local-pool ps1 --bridge-socket /run/tlbnet.sock] [service=/path/to/socket.sock ...]"
     );
+    eprintln!("defaults and env:");
+    eprintln!("  TLBUS_PLUGINS=lineage,auth,protocol[,hmac][,observability]");
     eprintln!("       set TLB_HMAC_KEY to enable the HMAC plugin");
     eprintln!("       set TLB_SERVICE_SECRET to enable service registration handshake");
-    eprintln!("       set TLBUS_PLUGINS=lineage,auth,protocol[,hmac] to choose active plugins");
+    eprintln!(
+        "       set TLB_METRICS_ADDR=host:port for the observability plugin (default 127.0.0.1:9090)"
+    );
 }

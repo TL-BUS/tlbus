@@ -1,0 +1,23 @@
+FROM rust:1.92-bookworm AS builder
+WORKDIR /app
+
+COPY Cargo.toml Cargo.lock ./
+COPY crates ./crates
+COPY clients ./clients
+
+RUN cargo build --release -p tlbus-bridge -p tlbus-sidecar
+
+FROM debian:bookworm-slim
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends ca-certificates \
+    && rm -rf /var/lib/apt/lists/*
+
+WORKDIR /app
+COPY --from=builder /app/target/release/tlbus-bridge /usr/local/bin/tlbus-bridge
+COPY --from=builder /app/target/release/tlbus-sidecar /usr/local/bin/tlbus-sidecar
+
+ENV TLBUS_PLUGINS="lineage,auth,protocol,observability"
+ENV TLB_METRICS_ADDR="0.0.0.0:9090"
+EXPOSE 9090
+
+CMD ["tlbus-sidecar"]

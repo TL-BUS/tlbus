@@ -1,0 +1,13 @@
+include:
+  - local: .gitlab/images/tlbusnet-runtime-obs.yml
+
+stages:
+  - test
+  - images
+
+tlbus_test:
+  stage: test
+  image: rust:1.92-bookworm
+  script:
+    - cargo fmt --all --check
+    - cargo test --workspace --all-targets

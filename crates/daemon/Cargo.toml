@@ -15,6 +15,7 @@ tlbus-plugin-auth = { path = "../plugins/auth" }
 tlbus-plugin-hmac = { path = "../plugins/hmac" }
 tlbus-plugin-lineage = { path = "../plugins/lineage" }
 tlbus-plugin-manifest = { path = "../plugins/manifest" }
+tlbus-plugin-observability = { path = "../plugins/observability" }
 
 [dev-dependencies]
 serde_json.workspace = true

@@ -1,0 +1,11 @@
+[package]
+name = "tlbus-plugin-observability"
+edition.workspace = true
+license.workspace = true
+version.workspace = true
+
+[dependencies]
+tlbus-core = { path = "../../core" }
+tokio.workspace = true
+hyper = { version = "0.14.24", features = ["server", "http1", "tcp"] }
+prometheus = "0.14.0"

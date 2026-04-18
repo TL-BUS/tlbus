@@ -104,6 +104,21 @@ tlbus_client_library:
     - "run_worker_loop(...)"
 ```
 
+## 4.2 Observability contract
+
+```yaml
+observability_plugin:
+  name: "observability"
+  enable_via: "TLBUS_PLUGINS includes observability"
+  env:
+    TLB_METRICS_ADDR:
+      default: "127.0.0.1:9090"
+  endpoint: "/metrics"
+  metrics:
+    - "tlbus_messages_total"
+    - "tlbus_message_latency_seconds"
+```
+
 ## 5. Container contract
 
 ```yaml
@@ -112,6 +127,7 @@ local_files:
   - "Dockerfile-client"
   - "Dockerfile-py"
   - "Dockerfile-worker"
+  - "Dockerfile-tlbusnet-obs"
 targets:
   tlbusd:
     image: "ghcr.io/<owner>/tlbusd"
@@ -119,6 +135,9 @@ targets:
   tlbusnet:
     image: "ghcr.io/<owner>/tlbusnet"
     target: "tlbusnet-runtime"
+  tlbusnet_obs:
+    image: "ghcr.io/<owner>/tlbusnet-obs"
+    target: "tlbusnet-runtime-obs"
   client:
     image: "ghcr.io/<owner>/tlbus-client"
     target: "client-runtime"
@@ -136,6 +155,10 @@ targets:
 workflows:
   tests: ".github/workflows/tests.yml"
   publish: ".github/workflows/ghcr-images.yml"
+gitlab:
+  pipeline: ".gitlab-ci.yml"
+  images:
+    - ".gitlab/images/tlbusnet-runtime-obs.yml"
 requirements:
   - "publish job must depend on tests success"
   - "images publish for linux/amd64 and linux/arm64"

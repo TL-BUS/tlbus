@@ -1,6 +1,7 @@
 use std::collections::BTreeMap;
 use std::fmt;
 use std::path::{Path, PathBuf};
+use std::time::{Duration, Instant};
 
 use crate::{Envelope, Result};
 
@@ -29,6 +30,8 @@ pub struct PluginContext {
     route: Option<PathBuf>,
     // Optional plugin-owned terminal response that short-circuits normal delivery.
     terminal_response: Option<Envelope>,
+    // Monotonic start timestamp for end-to-end metrics across plugin stages.
+    flow_started_at: Option<Instant>,
 }
 
 impl PluginContext {
@@ -58,6 +61,18 @@ impl PluginContext {
 
     pub fn has_terminal_response(&self) -> bool {
         self.terminal_response.is_some()
+    }
+
+    pub fn set_flow_started_at(&mut self, instant: Instant) {
+        self.flow_started_at = Some(instant);
+    }
+
+    pub fn flow_started_at(&self) -> Option<Instant> {
+        self.flow_started_at
+    }
+
+    pub fn flow_elapsed(&self) -> Option<Duration> {
+        self.flow_started_at.map(|instant| instant.elapsed())
     }
 }
 

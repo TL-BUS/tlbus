@@ -43,8 +43,11 @@ fn print_usage() {
     eprintln!("  TLB_BUS_PORT=8202");
     eprintln!("  TLB_BUS_ADVERTISE_ADDR=127.0.0.1:<TLB_BUS_PORT>");
     eprintln!("  TLB_REFRESH_MANIFEST_MS=2000");
-    eprintln!("  TLBUS_PLUGINS=lineage,auth,protocol[,hmac]");
+    eprintln!("  TLBUS_PLUGINS=lineage,auth,protocol[,hmac][,observability]");
     eprintln!("       set TLB_HMAC_KEY to enable the HMAC plugin");
     eprintln!("       set TLB_SERVICE_SECRET to enable service registration handshake");
     eprintln!("       set TLB_POOL_SECRET to enable pool-to-pool federation handshake");
+    eprintln!(
+        "       set TLB_METRICS_ADDR=host:port for the observability plugin (default 127.0.0.1:9090)"
+    );
 }

@@ -9,6 +9,7 @@ use tlbus_plugin_auth::AuthPlugin;
 use tlbus_plugin_hmac::HmacPlugin;
 use tlbus_plugin_lineage::LineagePlugin;
 use tlbus_plugin_manifest::ProtocolPlugin;
+use tlbus_plugin_observability::ObservabilityPlugin;
 use tokio::net::{UnixListener, UnixStream};
 
 const DEFAULT_PLUGINS: &[&str] = &["lineage", "auth", "protocol"];
@@ -59,6 +60,7 @@ pub fn build_pipeline(
                 pipeline.add(HmacPlugin::new(shared_key));
             }
             "protocol" | "manifest" => pipeline.add(ProtocolPlugin::new(router.clone())),
+            "observability" => pipeline.add(ObservabilityPlugin::new()?),
             other => {
                 return Err(BusError::Configuration(format!(
                     "unknown plugin `{other}` in `TLBUS_PLUGINS`"

@@ -1,11 +1,10 @@
 FROM rust:1.92-bookworm AS builder
 WORKDIR /app
 
-COPY Cargo.toml ./
+COPY Cargo.toml Cargo.lock ./
 COPY crates ./crates
 COPY clients ./clients
 
-RUN cargo generate-lockfile
 RUN cargo build --release \
     -p tlbus-daemon \
     -p tlbus-bridge \
@@ -29,6 +28,11 @@ FROM runtime-base AS tlbusnet-runtime
 COPY --from=builder /app/target/release/tlbus-bridge /usr/local/bin/tlbus-bridge
 COPY --from=builder /app/target/release/tlbus-sidecar /usr/local/bin/tlbus-sidecar
 CMD ["tlbus-sidecar"]
+
+FROM tlbusnet-runtime AS tlbusnet-runtime-obs
+ENV TLBUS_PLUGINS="lineage,auth,protocol,observability"
+ENV TLB_METRICS_ADDR="0.0.0.0:9090"
+EXPOSE 9090
 
 FROM runtime-base AS client-runtime
 COPY --from=builder /app/target/release/tlbus-client /usr/local/bin/tlbus-client

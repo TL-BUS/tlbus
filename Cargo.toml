@@ -11,6 +11,7 @@ members = [
     "crates/plugins/hmac",
     "crates/plugins/lineage",
     "crates/plugins/manifest",
+    "crates/plugins/observability",
 ]
 resolver = "2"
 

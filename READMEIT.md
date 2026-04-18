@@ -101,6 +101,7 @@ Il repository pubblica immagini Docker tramite
 
 - `ghcr.io/<owner>/tlbusd` per il daemon core
 - `ghcr.io/<owner>/tlbusnet` per il runtime di federation
+- `ghcr.io/<owner>/tlbusnet-obs` per il runtime di federation con observability Prometheus abilitata
 - `ghcr.io/<owner>/tlbus-client` per il client base Rust
 - `ghcr.io/<owner>/tlbus-pyclient` per il client base Python
 - `ghcr.io/<owner>/tlbus-worker` per il worker base Rust
@@ -125,12 +126,14 @@ File dedicati per build locale:
 - [Dockerfile-client](Dockerfile-client)
 - [Dockerfile-py](Dockerfile-py)
 - [Dockerfile-worker](Dockerfile-worker)
+- [Dockerfile-tlbusnet-obs](Dockerfile-tlbusnet-obs)
 
 Build dal file canonico:
 
 ```bash
 docker build -f Dockerfile --target tlbusd-runtime -t tlbusd:local .
 docker build -f Dockerfile --target tlbusnet-runtime -t tlbusnet:local .
+docker build -f Dockerfile --target tlbusnet-runtime-obs -t tlbusnet-obs:local .
 docker build -f Dockerfile --target client-runtime -t tlbus-client:local .
 docker build -f Dockerfile --target pyclient-runtime -t tlbus-pyclient:local .
 docker build -f Dockerfile --target worker-runtime -t tlbus-worker:local .
@@ -142,6 +145,7 @@ Build dai file dedicati:
 docker build -f Dockerfile-client -t tlbus-client:local .
 docker build -f Dockerfile-py -t tlbus-pyclient:local .
 docker build -f Dockerfile-worker -t tlbus-worker:local .
+docker build -f Dockerfile-tlbusnet-obs -t tlbusnet-obs:local .
 ```
 
 ## Contratto log
@@ -164,6 +168,18 @@ I campi log seguono il modello trace del flusso TL-Bus:
 - `to`
 - `reply_to`
 - `service`
+
+## Observability
+
+Le metriche Prometheus sono fornite dal plugin `observability`.
+
+```bash
+export TLBUS_PLUGINS="lineage,auth,protocol,observability"
+export TLB_METRICS_ADDR="127.0.0.1:9090"
+curl -sS http://127.0.0.1:9090/metrics
+```
+
+`tlbusnet-runtime-obs` e `Dockerfile-tlbusnet-obs` abilitano il plugin e bindano `0.0.0.0:9090`.
 
 ## Documentazione
 
