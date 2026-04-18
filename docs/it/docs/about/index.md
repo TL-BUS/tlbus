@@ -16,7 +16,7 @@ Invece di nascondere routing e metadata dentro un framework grande e opaco, il p
 | Routing esplicito | I nomi servizio si risolvono in socket o target di pool concreti |
 | Tracciabilita` | `txn_id` resta visibile da ingress fino alla reply |
 | Componenti piccoli | Daemon, bridge, sidecar e sender hanno ognuno un ruolo stretto |
-| Testabilita` | Il workspace include test unitari e script demo |
+| Testabilita` | Il workspace include test unitari e workflow CI |
 
 ## Focus del progetto
 
@@ -27,4 +27,3 @@ TL-Bus e` quindi adatto quando vuoi:
 - osservare header e lineage dei messaggi
 - comporre delivery locale e federata
 - agganciare policy senza riscrivere il bus core
-

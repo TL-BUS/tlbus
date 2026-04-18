@@ -9,38 +9,45 @@
   <img src="assets/tlbus.png" alt="TL-Bus logo" width="420">
 </p>
 
-> A Rust message bus for microservices that keeps routing, lineage, and federation explicit.
+> A Rust message bus for microservices with explicit routing, lineage, and federation.
 
-TL-Bus is organized as a Rust workspace for message-driven systems. It is built for teams that want the bus layer to stay visible and debuggable instead of disappearing behind a lot of hidden framework magic.
+TL-Bus is a core workspace for message-driven systems. It keeps message flow visible and inspectable through explicit envelopes, manifests, and plugin stages.
+
+## Scope boundary
+
+This repository is the TL-Bus core only.
+It contains bus components, plugins, and base clients/workers.
+It does not include application stacks.
 
 ## Project focus
 
-TL-Bus centers on a few things and tries to do them well:
-
 - explicit envelopes with stable metadata
-- `txn_id` propagation across the whole message path
+- `txn_id` propagation across the full message path
 - service manifests with capabilities and modes
 - local delivery through Unix sockets
-- cross-pool delivery through a bridge and sidecar pair
-- a plugin pipeline for lineage, auth, HMAC, and protocol handling
+- cross-pool delivery through bridge and sidecar
+- plugin pipeline for lineage, auth, HMAC, and protocol handling
 
 ## Main pieces
 
 | Component | Role |
 | --- | --- |
-| `tlbus-core` | Core message types, routing helpers, plugins, and frame codecs |
-| `tlbus-daemon` | Local bus daemon that validates, routes, and delivers envelopes |
+| `tlbus-core` | Core message types, frame codecs, routing helpers, plugin contracts |
+| `tlbus-daemon` | Local bus daemon that validates and routes envelopes |
 | `tlbus-bridge` | HTTP/2 federation bridge between pools |
-| `tlbus-sidecar` | Convenience runtime that combines daemon and bridge for a pool |
-| `tlbus-send` | Small CLI for sending one envelope to the bus |
-| `crates/plugins/*` | Lineage, auth, HMAC, and protocol/manifest plugins |
+| `tlbus-sidecar` | Runtime that combines daemon and bridge |
+| `tlbus-send` | Thin one-shot sender CLI |
+| `tlbus-client` | Base Rust client with registration/send/receive primitives |
+| `tlbus-worker` | Base Rust worker wrapper built on `tlbus-client` worker runtime |
+| `tlbus-pyclient` | Base Python client (`clients/pyclient/tlbus_pyclient.py`) |
+| `crates/plugins/*` | Lineage, auth, HMAC, and manifest/protocol plugins |
 
 ## Architecture at a glance
 
 ```mermaid
 flowchart LR
-  App[client or service] --> Send[tlbus-send]
-  Send --> Daemon[tlbus-daemon]
+  App[client or service] --> Client[tlbus-client or tlbus-pyclient]
+  Client --> Daemon[tlbus-daemon]
   Daemon --> LocalSvc[local service socket]
   Daemon --> Sidecar[tlbus-sidecar]
   Sidecar --> Bridge[tlbus-bridge]
@@ -58,55 +65,105 @@ tlbus/
 |  |- sidecar
 |  |- send
 |  `- plugins/
+|- clients/
+|  |- client/
+|  |- pyclient/
+|  `- worker/
 |- docs/
 |  |- en/
 |  `- it/
 `- .github/workflows/
 ```
 
-The docs tree follows the same idea as FastAPI: one locale per branch of the docs, with a landing page and focused sections underneath.
+The docs tree follows a locale-per-branch structure inspired by FastAPI docs.
 
 ## Quick start
 
-Run the automatic tests:
+Run automatic checks:
 
 ```bash
+cargo fmt --all --check
 cargo test --workspace --all-targets
 ```
 
-Inspect the bus sender:
+Inspect base CLIs:
 
 ```bash
-cargo run -p tlbus-send -- --help
+cargo run -p tlbus-client -- --help
+cargo run -p tlbus-worker -- --help
+python3 clients/pyclient/tlbus_pyclient.py --help
 ```
 
-## GHCR Images
+## GHCR images
 
-The repository publishes two Docker images to GitHub Container Registry through
-[.github/workflows/ghcr-images.yml](/Users/archetipo/devel/microservices/projects/TL-Bus%20Project/tlbus/.github/workflows/ghcr-images.yml):
+The repository publishes Docker images through
+[.github/workflows/ghcr-images.yml](.github/workflows/ghcr-images.yml):
 
 - `ghcr.io/<owner>/tlbusd` for the core daemon
-- `ghcr.io/<owner>/tlbusnet` for the federation layer
+- `ghcr.io/<owner>/tlbusnet` for federation runtime
+- `ghcr.io/<owner>/tlbus-client` for Rust client base
+- `ghcr.io/<owner>/tlbus-pyclient` for Python client base
+- `ghcr.io/<owner>/tlbus-worker` for Rust worker base
 
 Release tags are calendar-style tags such as `2026.0.1` and are pushed when the Git tag starts with `20`.
-`latest` still tracks the default branch.
+`latest` tracks the default branch.
 
-## Local Docker Build
+## Base image map
 
-The canonical build definition is [Dockerfile](/Users/archetipo/devel/microservices/projects/TL-Bus%20Project/tlbus/Dockerfile).
-`Dockerfile.ghcr` is an alias used by the GitHub publish workflow and points to the same file.
+| Image | Docker target | Purpose |
+| --- | --- | --- |
+| `tlbus-client` | `client-runtime` | Base Rust client image |
+| `tlbus-pyclient` | `pyclient-runtime` | Base Python client image |
+| `tlbus-worker` | `worker-runtime` | Base Rust worker image |
 
-Build the core daemon image locally:
+## Docker builds
+
+Canonical multi-target file:
+- [Dockerfile](Dockerfile)
+
+Dedicated local build files:
+- [Dockerfile-client](Dockerfile-client)
+- [Dockerfile-py](Dockerfile-py)
+- [Dockerfile-worker](Dockerfile-worker)
+
+Build from the canonical file:
 
 ```bash
 docker build -f Dockerfile --target tlbusd-runtime -t tlbusd:local .
+docker build -f Dockerfile --target tlbusnet-runtime -t tlbusnet:local .
+docker build -f Dockerfile --target client-runtime -t tlbus-client:local .
+docker build -f Dockerfile --target pyclient-runtime -t tlbus-pyclient:local .
+docker build -f Dockerfile --target worker-runtime -t tlbus-worker:local .
 ```
 
-Build the federation image locally:
+Build from dedicated files:
 
 ```bash
-docker build -f Dockerfile --target tlbusnet-runtime -t tlbusnet:local .
+docker build -f Dockerfile-client -t tlbus-client:local .
+docker build -f Dockerfile-py -t tlbus-pyclient:local .
+docker build -f Dockerfile-worker -t tlbus-worker:local .
 ```
+
+## Logging contract
+
+Base clients and workers emit operational logs with explicit event names:
+
+- `event=register`
+- `event=send`
+- `event=recv`
+- `event=reply`
+- `event=drop` (when applicable)
+
+`tlbus-worker` keeps only argument parsing and payload handler logic.
+Worker register/receive/reply runtime is implemented in `tlbus-client`.
+
+Log fields follow the same trace model used by TL-Bus message flow:
+
+- `txn_id`
+- `from`
+- `to`
+- `reply_to`
+- `service`
 
 ## Documentation
 
@@ -116,11 +173,10 @@ docker build -f Dockerfile --target tlbusnet-runtime -t tlbusnet:local .
 
 ## Notes
 
-- TL-Bus keeps `txn_id` and `reply_to` explicit in the envelope model.
-- Service discovery is manifest-driven, not hard-coded.
-- The repository license is MIT.
-- Demo stacks live in the sibling `examples/` folder of the project workspace.
+- TL-Bus keeps `txn_id` and `reply_to` explicit at bus level.
+- Service discovery is manifest-driven.
+- Repository license is MIT.
 
-## Author
+## Trademark
 
-Alessio Gerace 
+TL-Bus trademark and project site: [www.thinkstudio.it](https://www.thinkstudio.it)

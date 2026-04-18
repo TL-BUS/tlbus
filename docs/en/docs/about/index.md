@@ -16,7 +16,7 @@ Instead of hiding routing and message metadata inside a big framework, the proje
 | Explicit routing | Service names resolve to concrete socket paths or pool targets |
 | Traceability | `txn_id` stays visible from ingress to reply |
 | Small components | Daemon, bridge, sidecar, and sender each have a narrow job |
-| Testability | The workspace ships with unit tests and demo scripts |
+| Testability | The workspace ships with unit tests and CI workflows |
 
 ## Project focus
 
@@ -27,4 +27,3 @@ That makes TL-Bus a good fit when you want to:
 - observe message headers and lineage
 - compose local and federated delivery
 - plug in policy without rewriting the core bus
-

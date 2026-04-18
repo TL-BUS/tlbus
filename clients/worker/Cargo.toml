@@ -1,0 +1,10 @@
+[package]
+name = "tlbus-worker"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+serde_json.workspace = true
+tlbus-client = { path = "../client" }
+tlbus-core = { path = "../../crates/core" }

@@ -5,6 +5,8 @@ members = [
     "crates/sidecar",
     "crates/send",
     "crates/bridge",
+    "clients/client",
+    "clients/worker",
     "crates/plugins/auth",
     "crates/plugins/hmac",
     "crates/plugins/lineage",

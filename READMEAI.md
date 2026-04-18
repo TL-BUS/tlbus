@@ -1,185 +1,171 @@
-# TL-Bus Repository AI Guide
+# TL-Bus AI Guide
 
-This file is designed to be machine-readable and action-oriented for AI agents that must create or extend projects in this repository.
+Machine-oriented execution guide for agents working in this repository.
 
-## AI_SPEC
+## 1. Hard constraints
 
-```yaml
-spec_version: "1.0"
-repository:
-  name: "tlbus"
-  primary_language: "rust"
-  secondary_languages: ["python", "bash", "yaml", "html"]
-  build_systems: ["cargo", "docker compose"]
-documentation_policy:
-  readme_default_language: "en"
-  localized_readme_pattern: "READMEIT.md"
-critical_rules:
-  - "Do not use monkey patches."
-  - "Prefer robust solutions over quick hacks."
-  - "Run automatic tests for affected modules."
-  - "Do not invent unknown libraries."
-  - "Never expose secrets."
-protocol_requirements:
-  txn_id:
-    required: true
-    behavior: "propagate unchanged across request chain and replies"
-  headers:
-    required_minimum: ["txn_id", "protocol"]
-    recommended: ["transport", "protocol_version", "content_type", "reply_to"]
-  addressing_pattern: "<pool>.<service>.<action>"
-```
+1. This repository is **core-only** (`tlbus` branch scope).
+2. Do not reference external application stacks from here.
+3. No monkey patching.
+4. Prefer robust implementations over temporary hacks.
+5. Run automatic checks for touched code.
+6. Do not invent unknown libraries.
+7. Never expose secrets.
 
-## REPO_MAP
+## 2. Repository contract
 
 ```yaml
-paths:
+spec_version: "2.0"
+repo_name: "tlbus"
+scope: "core-only"
+languages:
+  primary: "rust"
+  secondary: ["python", "bash", "yaml", "markdown"]
+workspace_paths:
   core:
     - "crates/core"
     - "crates/daemon"
     - "crates/bridge"
     - "crates/sidecar"
     - "crates/send"
+  clients:
+    - "clients/client"
+    - "clients/pyclient"
+    - "clients/worker"
   plugins:
     - "crates/plugins/auth"
     - "crates/plugins/lineage"
     - "crates/plugins/hmac"
     - "crates/plugins/manifest"
-  demo_rust:
-    - "examples/compose-demo"
-    - "examples/openclaw-tlbusnet-demo"
-  demo_python:
-    - "examples/python-client"
-    - "examples/billing-demo/python"
-  analysis:
-    - "analisi"
+  docs:
+    - "docs/en"
+    - "docs/it"
 ```
 
-## AGENT_WORKFLOW
+## 3. Messaging contract
 
 ```yaml
-workflow:
-  - step: "Read relevant README.md and domain data under analisi/ when present."
-  - step: "Identify service boundaries: gateway, workflow/orchestrator, domain services."
-  - step: "Keep message contracts explicit (payload schema + headers)."
-  - step: "Ensure all outbound messages preserve inbound txn_id."
-  - step: "Register services with manifest capabilities and modes."
-  - step: "Wire demo stack via docker compose (sidecars + services + clients)."
-  - step: "Run tests and config validation commands."
-  - step: "Update README.md in English and add READMEIT.md only when keeping Italian docs."
+addressing_pattern: "<pool>.<service>.<action>"
+headers:
+  required:
+    - "txn_id"
+    - "protocol"
+  recommended:
+    - "transport"
+    - "protocol_version"
+    - "content_type"
+    - "reply_to"
+txn_id:
+  ingress: "generate once if missing"
+  internal_calls: "propagate unchanged"
+  replies: "reuse inbound txn_id"
 ```
 
-## SERVICE_TEMPLATE
+## 4. Logging contract
 
-Use this pattern when adding a new TL-Bus service in Rust demo code:
+Clients and workers must emit explicit operational events.
 
 ```yaml
-service_template:
-  register:
-    env_required: ["TLB_SERVICE_NAME", "TLB_SERVICE_SECRET"]
-    helper: "bootstrap_service(...) in examples/compose-demo/src/lib.rs"
-  listener:
-    function: "bind_service_listener(service_socket)"
-    loop: "accept -> read_envelope -> parse target -> decode payload -> handle -> reply"
-  reply_rules:
-    must_copy_headers:
-      - "txn_id"
-      - "workflow_id (if present)"
-      - "command/operation index (if present)"
-    must_use_reply_to_header: true
-  logging:
-    use_trace_fields: true
-    include_txn_id: true
+events:
+  required:
+    - "register"
+    - "send"
+    - "recv"
+  optional:
+    - "reply"
+    - "drop"
+fields:
+  required:
+    - "service"
+    - "txn_id"
+  context:
+    - "from"
+    - "to"
+    - "reply_to"
+python_logger:
+  env_level: "TLB_LOG_LEVEL"
+  format: "%(asctime)s %(levelname)s [%(name)s] %(message)s"
 ```
 
-## TXN_ID_CONTRACT
+## 4.1 Worker composition contract
 
 ```yaml
-txn_id_contract:
-  ingress:
-    - "If missing at boundary, generate once (lineage/plugin or boundary service)."
-  internal_calls:
-    - "Always copy txn_id from inbound envelope to outbound headers."
-  async_workflows:
-    - "Store txn_id inside workflow state."
-    - "Use same txn_id for final batch/aggregate reply."
-  failure_paths:
-    - "Fallback responses must keep txn_id."
-  forbidden:
-    - "Do not regenerate txn_id mid-workflow."
-    - "Do not drop txn_id in timeout/error branches."
+tlbus_worker_binary:
+  responsibility:
+    - "argument parsing"
+    - "payload handler logic"
+  must_not_reimplement:
+    - "worker registration loop"
+    - "receive/reply runtime plumbing"
+tlbus_client_library:
+  runtime_api:
+    - "WorkerLoopConfig"
+    - "WorkerReply"
+    - "run_worker_loop(...)"
 ```
 
-## EXAMPLE_CREATION_PLAYBOOK
+## 5. Container contract
 
 ```yaml
-create_new_demo:
-  inputs:
-    - "domain scenario"
-    - "data source (csv/json/db)"
-    - "pool topology (local/federated)"
-  output_structure:
-    rust_code:
-      - "examples/compose-demo/src/<new_module>.rs"
-      - "examples/compose-demo/src/main.rs (new commands)"
-      - "examples/compose-demo/src/lib.rs (exports)"
-    infra:
-      - "examples/<new-demo>/docker-compose.yml"
-      - "examples/<new-demo>/test.sh"
-      - "examples/<new-demo>/README.md"
-      - "examples/<new-demo>/READMEIT.md (optional)"
-  required_capabilities:
-    - "one gateway/orchestrator capability"
-    - "one or more domain capabilities"
-    - "one client receive_result capability"
-  validation:
-    - "cargo fmt --all"
-    - "cargo test -p tlbus-compose-demo"
-    - "docker compose -f <demo>/docker-compose.yml config"
+canonical_file: "Dockerfile"
+local_files:
+  - "Dockerfile-client"
+  - "Dockerfile-py"
+  - "Dockerfile-worker"
+targets:
+  tlbusd:
+    image: "ghcr.io/<owner>/tlbusd"
+    target: "tlbusd-runtime"
+  tlbusnet:
+    image: "ghcr.io/<owner>/tlbusnet"
+    target: "tlbusnet-runtime"
+  client:
+    image: "ghcr.io/<owner>/tlbus-client"
+    target: "client-runtime"
+  pyclient:
+    image: "ghcr.io/<owner>/tlbus-pyclient"
+    target: "pyclient-runtime"
+  worker:
+    image: "ghcr.io/<owner>/tlbus-worker"
+    target: "worker-runtime"
 ```
 
-## COMMAND_REFERENCE
+## 6. CI contract
 
 ```yaml
-commands:
-  rust_tests:
-    - "cargo test -p tlbus-compose-demo"
-    - "cargo test -p tlbus-daemon"
-  formatting:
-    - "cargo fmt --all"
-  compose_validation:
-    - "docker compose -f examples/openclaw-tlbusnet-demo/docker-compose.yml --env-file examples/openclaw-tlbusnet-demo/.env.example config"
-  demo_run:
-    - "bash examples/openclaw-tlbusnet-demo/test.sh all"
+workflows:
+  tests: ".github/workflows/tests.yml"
+  publish: ".github/workflows/ghcr-images.yml"
+requirements:
+  - "publish job must depend on tests success"
+  - "images publish for linux/amd64 and linux/arm64"
+  - "release tags follow 20* pattern (2026.0.1)"
+  - "latest is published from default branch"
+  - "use Node 24-compatible actions/runtime"
 ```
 
-## DOC_POLICY
+## 7. Required validation before final output
 
-```yaml
-documentation:
-  rules:
-    - "README.md must be English."
-    - "If preserving an Italian version, store it as READMEIT.md."
-    - "Keep operational commands executable as written."
-    - "Include expected output examples where useful."
+Run all applicable commands:
+
+```bash
+cargo fmt --all --check
+cargo test --workspace --all-targets
+python3 -m py_compile clients/pyclient/tlbus_pyclient.py
 ```
 
-## ACCEPTANCE_CHECKLIST
+Then verify scope cleanliness against external stack references.
 
-```yaml
-acceptance_checklist:
-  - "All touched README.md files are in English."
-  - "Italian versions (if any) are available as READMEIT.md."
-  - "txn_id propagation verified in request, reply, and fallback paths."
-  - "Tests for touched modules pass."
-  - "Compose config validates for touched demos."
-  - "No secrets added to code, docs, or compose files."
-```
+## 8. Change checklist
 
-## MINIMAL_AGENT_PROMPT
+1. Keep EN and IT README aligned.
+2. Keep READMEAI aligned with actual workflow/tooling.
+3. Preserve txn_id and reply traceability in code and logs.
+4. Ensure new Docker/CI/documentation names match exactly.
+5. Report changed files and validation results.
 
-Use this snippet when delegating work to another AI:
+## 9. Minimal delegation prompt
 
 ```text
-Read READMEAI.md first. Build a TL-Bus project following AI_SPEC, TXN_ID_CONTRACT, and EXAMPLE_CREATION_PLAYBOOK. Keep README.md in English, keep optional Italian docs in READMEIT.md, run required tests, and report changed files plus validation results.
+Read READMEAI.md first. Work only in TL-Bus core scope, keep txn_id propagation and structured logs intact, update EN/IT docs when behavior changes, run required checks, and report changed files with validation results.
 ```

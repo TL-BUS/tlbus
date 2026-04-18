@@ -8,20 +8,21 @@ This short path shows the project from the outside in.
 cargo test --workspace --all-targets
 ```
 
-## 2. Inspect the sender
+## 2. Inspect the client
 
 ```bash
-cargo run -p tlbus-send -- --help
+cargo run -p tlbus-client -- --help
 ```
 
 ## 3. Send one envelope
 
 ```bash
-cargo run -p tlbus-send -- \
-  --socket /run/tlb.sock \
-  --from ps1.client \
+cargo run -p tlbus-client -- send \
+  --bus-socket /run/tlb.sock \
+  --service-name ps1.client \
+  --service-secret shared-secret \
   --to ps1.echo \
-  --payload "hello"
+  --payload "{\"message\":\"hello\"}"
 ```
 
 ## 4. Start from manifests
@@ -33,6 +34,12 @@ Service discovery is manifest-driven. A service describes its capabilities and m
 Use the sidecar and bridge when a message must leave the local pool.
 That keeps local delivery and cross-pool delivery separate, which is easier to reason about than a single mixed path.
 
-## Demo path
+## 6. Build base containers
 
-The quickest end-to-end demo lives in the sibling `examples/compose-demo` folder of the project workspace.
+Use one of these local builds:
+
+```bash
+docker build -f Dockerfile-client -t tlbus-client:local .
+docker build -f Dockerfile-py -t tlbus-pyclient:local .
+docker build -f Dockerfile-worker -t tlbus-worker:local .
+```

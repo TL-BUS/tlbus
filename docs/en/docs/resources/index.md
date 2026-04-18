@@ -1,10 +1,10 @@
 # Resources
 
-## Examples
+## Client modules
 
-- Compose demo in the sibling `examples/compose-demo` workspace folder
-- OpenClaw TL-Bus Net demo in the sibling `examples/openclaw-tlbusnet-demo` folder
-- Python client examples in the sibling `examples/python-client` folder
+- `clients/client`: Rust base client
+- `clients/pyclient`: Python base client
+- `clients/worker`: Rust base worker built on top of the client module
 
 ## Useful repo files
 

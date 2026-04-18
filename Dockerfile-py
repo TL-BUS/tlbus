@@ -1,0 +1,9 @@
+FROM python:3.12-slim
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends ca-certificates \
+    && rm -rf /var/lib/apt/lists/*
+
+WORKDIR /opt/tlbus-pyclient
+COPY clients/pyclient/tlbus_pyclient.py /opt/tlbus-pyclient/tlbus_pyclient.py
+ENV PYTHONPATH=/opt/tlbus-pyclient
+CMD ["python3", "/opt/tlbus-pyclient/tlbus_pyclient.py", "--help"]
