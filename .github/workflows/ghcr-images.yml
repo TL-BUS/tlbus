@@ -47,19 +47,19 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-	        include:
-	          - image: tlbusd
-	            target: tlbusd-runtime
-	          - image: tlbusnet
-	            target: tlbusnet-runtime
-	          - image: tlbusnet-obs
-	            target: tlbusnet-runtime-obs
-	          - image: tlbus-client
-	            target: client-runtime
-	          - image: tlbus-pyclient
-	            target: pyclient-runtime
-	          - image: tlbus-worker
-	            target: worker-runtime
+        include:
+          - image: tlbusd
+            target: tlbusd-runtime
+          - image: tlbusnet
+            target: tlbusnet-runtime
+          - image: tlbusnet-obs
+            target: tlbusnet-runtime-obs
+          - image: tlbus-client
+            target: client-runtime
+          - image: tlbus-pyclient
+            target: pyclient-runtime
+          - image: tlbus-worker
+            target: worker-runtime
 
     steps:
       - name: Checkout
