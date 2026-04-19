@@ -13,6 +13,7 @@ bytes.workspace = true
 h2.workspace = true
 http.workspace = true
 rmp-serde.workspace = true
+serde_json.workspace = true
 tokio.workspace = true
 tlbus-core = { path = "../core" }
 

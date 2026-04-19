@@ -750,6 +750,7 @@ dependencies = [
  "h2",
  "http 1.4.0",
  "rmp-serde",
+ "serde_json",
  "tempfile",
  "tlbus-core",
  "tokio",

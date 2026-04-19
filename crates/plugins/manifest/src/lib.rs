@@ -138,10 +138,14 @@ impl ProtocolPlugin {
         msg: &Envelope,
         target: &TargetAddress,
     ) -> Result<()> {
+        if self.is_remote_registry_request(target) {
+            return Ok(());
+        }
+
         let mut services = self
             .registry_descriptors(target)
             .into_iter()
-            .filter(|descriptor| !descriptor.is_client)
+            .filter(|descriptor| !descriptor.is_client && descriptor.active)
             .map(|descriptor| descriptor.registry_service())
             .collect::<Vec<_>>();
         services.sort_by(|left, right| left.name.cmp(&right.name));
@@ -164,6 +168,10 @@ impl ProtocolPlugin {
         msg: &Envelope,
         target: &TargetAddress,
     ) -> Result<()> {
+        if self.is_remote_registry_request(target) {
+            return Ok(());
+        }
+
         let request = match serde_json::from_slice::<RegistryManifestRequest>(&msg.payload) {
             Ok(request) if !request.service.trim().is_empty() => request,
             Ok(_) => {
@@ -195,6 +203,15 @@ impl ProtocolPlugin {
                 &format!("service `{}` not found", request.service),
             );
         };
+        if !descriptor.active {
+            return self.handle_registry_error(
+                ctx,
+                msg,
+                target,
+                "service_unavailable",
+                &format!("service `{}` is inactive", request.service),
+            );
+        }
 
         let registry_manifest = self.registry_manifest(&descriptor);
         let payload = serde_json::to_vec(&registry_manifest)
@@ -215,6 +232,10 @@ impl ProtocolPlugin {
         msg: &Envelope,
         target: &TargetAddress,
     ) -> Result<()> {
+        if self.is_remote_registry_request(target) {
+            return Ok(());
+        }
+
         let request = match serde_json::from_slice::<RegistryProtocolManifestRequest>(&msg.payload)
         {
             Ok(request)
@@ -251,6 +272,15 @@ impl ProtocolPlugin {
                 &format!("service `{}` not found", request.service),
             );
         };
+        if !descriptor.active {
+            return self.handle_registry_error(
+                ctx,
+                msg,
+                target,
+                "service_unavailable",
+                &format!("service `{}` is inactive", request.service),
+            );
+        }
 
         let Some(protocol_manifest) = self.protocol_manifest_for(&descriptor, &request.protocol)
         else {
@@ -354,6 +384,13 @@ impl ProtocolPlugin {
             Some(pool) => format!("{pool}.{REGISTRY_SERVICE}"),
             None => REGISTRY_SERVICE.to_string(),
         }
+    }
+
+    fn is_remote_registry_request(&self, target: &TargetAddress) -> bool {
+        matches!(
+            (target.pool(), self.local_pool.as_deref()),
+            (Some(requested_pool), Some(local_pool)) if requested_pool != local_pool
+        )
     }
 
     fn registry_descriptors(&self, target: &TargetAddress) -> Vec<ServiceDescriptor> {
@@ -501,7 +538,10 @@ impl ProtocolPlugin {
 #[cfg(test)]
 mod tests {
     use std::collections::BTreeMap;
+    #[cfg(unix)]
+    use std::os::unix::net::UnixListener as StdUnixListener;
     use std::path::PathBuf;
+    use std::time::{SystemTime, UNIX_EPOCH};
 
     use serde_json::{Value, json};
     use tlbus_core::{
@@ -511,7 +551,32 @@ mod tests {
 
     use crate::ProtocolPlugin;
 
-    fn register_invoice_service(router: &tlbus_core::Router) {
+    struct InvoiceServiceFixture {
+        socket_path: PathBuf,
+        #[cfg(unix)]
+        _listener: StdUnixListener,
+    }
+
+    impl Drop for InvoiceServiceFixture {
+        fn drop(&mut self) {
+            let _ = std::fs::remove_file(&self.socket_path);
+        }
+    }
+
+    fn unique_socket_path(prefix: &str) -> PathBuf {
+        let nanos = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_nanos();
+        PathBuf::from(format!("/tmp/{prefix}-{}-{nanos}.sock", std::process::id()))
+    }
+
+    fn register_invoice_service(router: &tlbus_core::Router) -> InvoiceServiceFixture {
+        let socket_path = unique_socket_path("tlb-invoice");
+        let _ = std::fs::remove_file(&socket_path);
+        #[cfg(unix)]
+        let listener = StdUnixListener::bind(&socket_path).unwrap();
+
         router.register_manifest(
             &ServiceManifest {
                 name: "ps2.invoice".to_string(),
@@ -554,8 +619,14 @@ mod tests {
                     },
                 ],
             },
-            PathBuf::from("/tmp/invoice.sock"),
+            socket_path.clone(),
         );
+
+        InvoiceServiceFixture {
+            socket_path,
+            #[cfg(unix)]
+            _listener: listener,
+        }
     }
 
     #[test]
@@ -680,9 +751,29 @@ mod tests {
     }
 
     #[test]
+    fn ignores_registry_get_manifest_requests_for_remote_pools() {
+        let router = tlbus_core::Router::new();
+        let _invoice_fixture = register_invoice_service(&router);
+
+        let plugin = ProtocolPlugin::with_local_pool(router, Some("ps1".to_string()));
+        let mut ctx = tlbus_core::PluginContext::default();
+        let mut message = tlbus_core::Envelope::new(
+            "ps1.agent",
+            "ps2.registry.get_manifest",
+            serde_json::to_vec(&json!({ "service": "ps2.invoice" })).unwrap(),
+        );
+        message
+            .headers
+            .insert("reply_to".to_string(), "ps1.agent.inbox".to_string());
+
+        plugin.on_receive(&mut ctx, &mut message).unwrap();
+        assert!(!ctx.has_terminal_response());
+    }
+
+    #[test]
     fn registry_list_returns_service_summaries() {
         let router = tlbus_core::Router::new();
-        register_invoice_service(&router);
+        let _invoice_fixture = register_invoice_service(&router);
 
         let plugin = ProtocolPlugin::with_local_pool(router, Some("ps2".to_string()));
         let mut ctx = tlbus_core::PluginContext::default();
@@ -709,9 +800,29 @@ mod tests {
     }
 
     #[test]
+    fn registry_list_omits_inactive_services() {
+        let router = tlbus_core::Router::new();
+        let _invoice_fixture = register_invoice_service(&router);
+        router.set_active("ps2.invoice", false);
+
+        let plugin = ProtocolPlugin::with_local_pool(router, Some("ps2".to_string()));
+        let mut ctx = tlbus_core::PluginContext::default();
+        let mut message = tlbus_core::Envelope::new("ps2.client", "registry.list", b"{}".to_vec());
+        message
+            .headers
+            .insert("reply_to".to_string(), "ps2.client.inbox".to_string());
+
+        plugin.on_receive(&mut ctx, &mut message).unwrap();
+
+        let response = ctx.take_terminal_response().unwrap();
+        let body: RegistryListResponse = serde_json::from_slice(&response.payload).unwrap();
+        assert!(body.services.is_empty());
+    }
+
+    #[test]
     fn registry_get_manifest_returns_full_manifest() {
         let router = tlbus_core::Router::new();
-        register_invoice_service(&router);
+        let _invoice_fixture = register_invoice_service(&router);
 
         let plugin = ProtocolPlugin::with_local_pool(router, Some("ps2".to_string()));
         let mut ctx = tlbus_core::PluginContext::default();
@@ -736,9 +847,33 @@ mod tests {
     }
 
     #[test]
+    fn registry_get_manifest_returns_service_unavailable_for_inactive_service() {
+        let router = tlbus_core::Router::new();
+        let _invoice_fixture = register_invoice_service(&router);
+        router.set_active("ps2.invoice", false);
+
+        let plugin = ProtocolPlugin::with_local_pool(router, Some("ps2".to_string()));
+        let mut ctx = tlbus_core::PluginContext::default();
+        let mut message = tlbus_core::Envelope::new(
+            "ps2.client",
+            "registry.get_manifest",
+            serde_json::to_vec(&json!({ "service": "invoice" })).unwrap(),
+        );
+        message
+            .headers
+            .insert("reply_to".to_string(), "ps2.client.inbox".to_string());
+
+        plugin.on_receive(&mut ctx, &mut message).unwrap();
+
+        let response = ctx.take_terminal_response().unwrap();
+        let body: Value = serde_json::from_slice(&response.payload).unwrap();
+        assert_eq!(body["error"]["code"], "service_unavailable");
+    }
+
+    #[test]
     fn registry_get_protocol_manifest_returns_specific_protocol_metadata() {
         let router = tlbus_core::Router::new();
-        register_invoice_service(&router);
+        let _invoice_fixture = register_invoice_service(&router);
 
         let plugin = ProtocolPlugin::with_local_pool(router, Some("ps2".to_string()));
         let mut ctx = tlbus_core::PluginContext::default();
@@ -767,7 +902,7 @@ mod tests {
     #[test]
     fn registry_get_protocol_manifest_returns_structured_error_when_protocol_is_missing() {
         let router = tlbus_core::Router::new();
-        register_invoice_service(&router);
+        let _invoice_fixture = register_invoice_service(&router);
 
         let plugin = ProtocolPlugin::with_local_pool(router, Some("ps2".to_string()));
         let mut ctx = tlbus_core::PluginContext::default();

@@ -1,4 +1,6 @@
 use std::collections::BTreeMap;
+#[cfg(unix)]
+use std::os::unix::net::UnixStream as StdUnixStream;
 use std::path::PathBuf;
 use std::sync::{Arc, RwLock};
 
@@ -87,6 +89,7 @@ impl Router {
     }
 
     pub fn manifest_for_pool(&self, pool: &str) -> Vec<ServiceDescriptor> {
+        self.refresh_activity(Some(pool));
         let prefix = format!("{pool}.");
         self.routes
             .read()
@@ -98,6 +101,7 @@ impl Router {
     }
 
     pub fn manifest(&self) -> Vec<ServiceDescriptor> {
+        self.refresh_activity(None);
         self.routes
             .read()
             .expect("router read lock poisoned")
@@ -146,11 +150,62 @@ impl Router {
                 },
             );
     }
+
+    fn refresh_activity(&self, pool: Option<&str>) {
+        let prefix = pool.map(|value| format!("{value}."));
+        let probes = self
+            .routes
+            .read()
+            .expect("router read lock poisoned")
+            .iter()
+            .filter(|(_, record)| !record.descriptor.is_client)
+            .filter(|(_, record)| record.descriptor.active)
+            .filter(|(_, record)| {
+                if let Some(prefix) = prefix.as_ref() {
+                    record.descriptor.service.starts_with(prefix)
+                } else {
+                    true
+                }
+            })
+            .map(|(service, record)| (service.clone(), record.socket_path.clone()))
+            .collect::<Vec<_>>();
+
+        if probes.is_empty() {
+            return;
+        }
+
+        let updates = probes
+            .into_iter()
+            .map(|(service, socket_path)| (service, !Self::socket_is_reachable(&socket_path)))
+            .collect::<Vec<_>>();
+
+        let mut routes = self.routes.write().expect("router write lock poisoned");
+        for (service, should_deactivate) in updates {
+            if should_deactivate {
+                if let Some(record) = routes.get_mut(&service) {
+                    record.descriptor.active = false;
+                }
+            }
+        }
+    }
+
+    fn socket_is_reachable(path: &PathBuf) -> bool {
+        #[cfg(unix)]
+        {
+            StdUnixStream::connect(path).is_ok()
+        }
+        #[cfg(not(unix))]
+        {
+            path.exists()
+        }
+    }
 }
 
 #[cfg(test)]
 mod tests {
     use std::collections::BTreeMap;
+    #[cfg(unix)]
+    use std::os::unix::net::UnixListener as StdUnixListener;
     use std::path::PathBuf;
 
     use crate::{Router, ServiceManifest};
@@ -258,5 +313,46 @@ mod tests {
         services.sort();
 
         assert_eq!(services, vec!["ps1.echo", "ps2.somma"]);
+    }
+
+    #[test]
+    #[cfg(unix)]
+    fn manifest_refreshes_service_activity_from_socket_liveness() {
+        let socket_path = PathBuf::from(format!(
+            "/tmp/tlb-live-{}.sock",
+            &uuid::Uuid::new_v4().to_string()[..8]
+        ));
+        let _ = std::fs::remove_file(&socket_path);
+
+        let listener = StdUnixListener::bind(&socket_path).unwrap();
+        let router = Router::new();
+        router.register_manifest(
+            &ServiceManifest {
+                name: "ps2.invoice".to_string(),
+                secret: "shared-secret".to_string(),
+                is_client: false,
+                features: BTreeMap::new(),
+                capabilities: Vec::new(),
+                modes: Vec::new(),
+            },
+            socket_path.clone(),
+        );
+
+        let active_descriptor = router
+            .manifest_for_pool("ps2")
+            .into_iter()
+            .find(|descriptor| descriptor.service == "ps2.invoice")
+            .unwrap();
+        assert!(active_descriptor.active);
+
+        drop(listener);
+        let _ = std::fs::remove_file(&socket_path);
+
+        let inactive_descriptor = router
+            .manifest_for_pool("ps2")
+            .into_iter()
+            .find(|descriptor| descriptor.service == "ps2.invoice")
+            .unwrap();
+        assert!(!inactive_descriptor.active);
     }
 }

@@ -8,9 +8,10 @@ use bytes::Bytes;
 use h2::client;
 use h2::server;
 use http::{Method, Request, Response, StatusCode};
+use serde_json::json;
 use tlbus_core::{
     BusError, Envelope, PoolHandshakeRequest, PoolHandshakeResponse, PoolManifest, Result, Router,
-    TargetAddress, decode_envelope, encode_envelope, write_envelope,
+    TXN_ID_HEADER, TargetAddress, decode_envelope, encode_envelope, write_envelope,
 };
 use tokio::net::{TcpListener, TcpStream, UnixListener, UnixStream};
 use tokio::time::sleep;
@@ -19,6 +20,11 @@ const FEDERATION_PATH: &str = "/tlbusnet/v0/envelopes";
 const HANDSHAKE_PATH: &str = "/tlbusnet/v0/handshake";
 const DEFAULT_PROTOCOL: &str = "raw";
 const TRANSPORT_HTTP2: &str = "http2";
+const REGISTRY_SERVICE: &str = "registry";
+const PROTOCOL_HEADER: &str = "protocol";
+const CONTENT_TYPE_HEADER: &str = "content_type";
+const CONTENT_TYPE_JSON: &str = "application/json";
+const STANDARD_PROTOCOL: &str = "standard";
 pub const DEFAULT_MANIFEST_SYNC_INTERVAL: Duration = Duration::from_secs(5);
 
 #[derive(Debug, Clone)]
@@ -114,7 +120,11 @@ impl Bridge {
 
     pub async fn handle_local_stream(&self, mut stream: UnixStream) -> Result<()> {
         let envelope = tlbus_core::read_envelope(&mut stream).await?;
-        self.forward_remote(envelope).await
+        if let Err(error) = self.forward_remote(envelope.clone()).await {
+            self.try_send_local_error_reply(&envelope, &error).await;
+            return Err(error);
+        }
+        Ok(())
     }
 
     pub async fn forward_remote(&self, mut envelope: Envelope) -> Result<()> {
@@ -165,23 +175,23 @@ impl Bridge {
             return Err(error);
         }
 
-        let descriptor = match peer_state.manifest.service(&target.route_key()) {
-            Some(descriptor) => descriptor,
-            None => {
-                let error = BusError::RouteNotFound {
-                    service: target.route_key(),
+        let descriptor = peer_state.manifest.service(&target.route_key());
+        if descriptor.is_none() && !allows_unlisted_remote_target(&target) {
+            let error = BusError::RouteNotFound {
+                service: target.route_key(),
+            };
+            log_envelope_event("export_rejected", &envelope, &format!("error={error}"));
+            return Err(error);
+        }
+
+        if let Some(descriptor) = descriptor {
+            if !descriptor.active {
+                let error = BusError::ServiceUnavailable {
+                    service: descriptor.service.clone(),
                 };
                 log_envelope_event("export_rejected", &envelope, &format!("error={error}"));
                 return Err(error);
             }
-        };
-
-        if !descriptor.active {
-            let error = BusError::ServiceUnavailable {
-                service: descriptor.service.clone(),
-            };
-            log_envelope_event("export_rejected", &envelope, &format!("error={error}"));
-            return Err(error);
         }
 
         envelope
@@ -408,7 +418,9 @@ impl Bridge {
             let bridge = self.clone();
 
             tokio::spawn(async move {
-                let _ = bridge.handle_local_stream(stream).await;
+                if let Err(error) = bridge.handle_local_stream(stream).await {
+                    eprintln!("tlbus-bridge: local ingress rejected message: {error}");
+                }
             });
         }
     }
@@ -659,6 +671,10 @@ impl Bridge {
     }
 
     fn validate_local_target(&self, target: &TargetAddress) -> Result<()> {
+        if target.service() == REGISTRY_SERVICE {
+            return Ok(());
+        }
+
         let route_key = target.route_key();
         if let Some(descriptor) = self.config.router.descriptor(&route_key) {
             return if descriptor.active {
@@ -734,6 +750,74 @@ impl Bridge {
             .get(pool)
             .cloned()
     }
+
+    async fn try_send_local_error_reply(&self, request: &Envelope, error: &BusError) {
+        let Some(reply_to) = request.reply_to().map(str::to_string) else {
+            return;
+        };
+
+        let payload = match serde_json::to_vec(&json!({
+            "error": {
+                "code": error_code_for_bus_error(error),
+                "message": error.to_string(),
+            }
+        })) {
+            Ok(payload) => payload,
+            Err(encode_error) => {
+                eprintln!(
+                    "tlbus-bridge: event=local_error_reply_failed {} error=json encode failed: {encode_error}",
+                    request.trace_fields()
+                );
+                return;
+            }
+        };
+
+        let sender = TargetAddress::parse(&request.to)
+            .map(|target| target.route_key())
+            .unwrap_or_else(|_| format!("{}.bridge", self.config.pool));
+        let mut response = Envelope::new(sender, reply_to, payload);
+        response.ttl_ms = request.ttl_ms;
+        response.headers.insert(
+            CONTENT_TYPE_HEADER.to_string(),
+            CONTENT_TYPE_JSON.to_string(),
+        );
+        response
+            .headers
+            .insert(PROTOCOL_HEADER.to_string(), STANDARD_PROTOCOL.to_string());
+        if let Some(txn_id) = request.txn_id() {
+            response
+                .headers
+                .insert(TXN_ID_HEADER.to_string(), txn_id.to_string());
+        }
+
+        let mut stream = match UnixStream::connect(&self.config.bus_socket).await {
+            Ok(stream) => stream,
+            Err(connect_error) => {
+                eprintln!(
+                    "tlbus-bridge: event=local_error_reply_failed {} bus_socket={} error={connect_error}",
+                    request.trace_fields(),
+                    self.config.bus_socket.display(),
+                );
+                return;
+            }
+        };
+
+        if let Err(write_error) = write_envelope(&mut stream, &response).await {
+            eprintln!(
+                "tlbus-bridge: event=local_error_reply_failed {} bus_socket={} error={write_error}",
+                request.trace_fields(),
+                self.config.bus_socket.display(),
+            );
+            return;
+        }
+
+        eprintln!(
+            "tlbus-bridge: event=local_error_reply {} code={} to={}",
+            request.trace_fields(),
+            error_code_for_bus_error(error),
+            response.to
+        );
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -766,6 +850,27 @@ fn status_for_error(error: &BusError) -> StatusCode {
     }
 }
 
+fn error_code_for_bus_error(error: &BusError) -> &'static str {
+    match error {
+        BusError::RouteNotFound { .. } => "service_not_found",
+        BusError::ServiceUnavailable { .. } => "service_unavailable",
+        BusError::Rejected { .. } => "rejected",
+        BusError::InvalidEnvelope(_) => "invalid_envelope",
+        BusError::Codec(_) => "codec_error",
+        BusError::Configuration(_) => "configuration_error",
+        BusError::Unsupported(_) => "unsupported",
+        BusError::Expired => "expired",
+        BusError::Transport(_) | BusError::Io(_) => "transport_error",
+    }
+}
+
+fn allows_unlisted_remote_target(target: &TargetAddress) -> bool {
+    if target.service() == REGISTRY_SERVICE {
+        return true;
+    }
+    matches!(target.action(), Some("inbox"))
+}
+
 fn log_envelope_event(event: &str, envelope: &Envelope, details: &str) {
     eprintln!(
         "tlbus-bridge: event={event} {} {details}",
@@ -780,6 +885,7 @@ mod tests {
     use std::path::PathBuf;
     use std::time::Duration;
 
+    use serde_json::Value;
     use tempfile::tempdir;
     use tlbus_core::{
         BusError, Envelope, Router, ServiceCapability, ServiceManifest, ServiceMode, read_envelope,
@@ -824,10 +930,9 @@ mod tests {
         let right_peer_addr = right_peer_listener.local_addr().unwrap();
 
         let right_router = Router::new();
-        right_router.register_manifest(
-            &service_manifest("ps2.echo"),
-            PathBuf::from("/tmp/ps2-echo.sock"),
-        );
+        let right_service_socket = right_dir.path().join("ps2-echo.sock");
+        let _right_service_listener = UnixListener::bind(&right_service_socket).unwrap();
+        right_router.register_manifest(&service_manifest("ps2.echo"), right_service_socket);
         let right_bridge = Bridge::new(BridgeConfig::new(
             "ps2",
             bus_socket.clone(),
@@ -915,10 +1020,9 @@ mod tests {
         let right_peer_addr = right_peer_listener.local_addr().unwrap();
 
         let right_router = Router::new();
-        right_router.register_manifest(
-            &service_manifest("ps2.echo"),
-            PathBuf::from("/tmp/ps2-echo.sock"),
-        );
+        let right_service_socket = right_dir.path().join("ps2-echo.sock");
+        let _right_service_listener = UnixListener::bind(&right_service_socket).unwrap();
+        right_router.register_manifest(&service_manifest("ps2.echo"), right_service_socket);
         let right_bridge = Bridge::new(BridgeConfig::new(
             "ps2",
             right_dir.path().join("bus.sock"),
@@ -967,6 +1071,169 @@ mod tests {
             error,
             BusError::RouteNotFound { service } if service == "ps2.calcola"
         ));
+    }
+
+    #[tokio::test]
+    async fn bridge_allows_registry_requests_even_if_registry_is_not_in_peer_manifest() {
+        let left_dir = tempdir().unwrap();
+        let right_dir = tempdir().unwrap();
+
+        let bus_socket = right_dir.path().join("bus.sock");
+        let bus_listener = UnixListener::bind(&bus_socket).unwrap();
+
+        let right_peer_listener = TcpListener::bind(loopback_addr()).await.unwrap();
+        let right_peer_addr = right_peer_listener.local_addr().unwrap();
+
+        let right_router = Router::new();
+        let right_service_socket = right_dir.path().join("ps2-echo.sock");
+        let _right_service_listener = UnixListener::bind(&right_service_socket).unwrap();
+        right_router.register_manifest(&service_manifest("ps2.echo"), right_service_socket);
+        let right_bridge = Bridge::new(BridgeConfig::new(
+            "ps2",
+            bus_socket.clone(),
+            right_dir.path().join("ingress.sock"),
+            right_peer_addr,
+            right_peer_addr.to_string(),
+            right_router,
+            Vec::new(),
+            Duration::from_secs(30),
+            Some("shared-pool-secret".to_string()),
+        ));
+
+        let right_server = tokio::spawn({
+            let right_bridge = right_bridge.clone();
+            let right_peer_listener = right_peer_listener;
+            async move {
+                for _ in 0..2 {
+                    let (stream, _) = right_peer_listener.accept().await.unwrap();
+                    right_bridge.handle_peer_stream(stream).await.unwrap();
+                }
+            }
+        });
+
+        let left_bridge = Bridge::new(BridgeConfig::new(
+            "ps1",
+            left_dir.path().join("bus.sock"),
+            left_dir.path().join("ingress.sock"),
+            loopback_addr(),
+            "127.0.0.1:9001",
+            Router::new(),
+            vec![right_peer_addr.to_string()],
+            Duration::from_secs(30),
+            Some("shared-pool-secret".to_string()),
+        ));
+        left_bridge
+            .sync_peer(&right_peer_addr.to_string())
+            .await
+            .unwrap();
+
+        let mut message = Envelope::new(
+            "ps1.agent",
+            "ps2.registry.get_manifest",
+            br#"{"service":"ps2.invoice"}"#.to_vec(),
+        );
+        message
+            .headers
+            .insert("protocol".to_string(), "raw".to_string());
+        message
+            .headers
+            .insert("txn_id".to_string(), "txn-registry-1".to_string());
+
+        left_bridge.forward_remote(message).await.unwrap();
+
+        let (mut inbound, _) = bus_listener.accept().await.unwrap();
+        let delivered = read_envelope(&mut inbound).await.unwrap();
+        right_server.abort();
+
+        assert_eq!(delivered.to, "ps2.registry.get_manifest");
+        assert_eq!(delivered.txn_id(), Some("txn-registry-1"));
+    }
+
+    #[tokio::test]
+    async fn bridge_allows_inbox_targets_even_if_peer_manifest_is_stale() {
+        let left_dir = tempdir().unwrap();
+        let right_dir = tempdir().unwrap();
+
+        let bus_socket = right_dir.path().join("bus.sock");
+        let bus_listener = UnixListener::bind(&bus_socket).unwrap();
+
+        let right_peer_listener = TcpListener::bind(loopback_addr()).await.unwrap();
+        let right_peer_addr = right_peer_listener.local_addr().unwrap();
+
+        let right_router = Router::new();
+        let right_seed_socket = right_dir.path().join("ps1-seed.sock");
+        let _right_seed_listener = UnixListener::bind(&right_seed_socket).unwrap();
+        right_router.register_manifest(&service_manifest("ps1.seed"), right_seed_socket);
+        let right_bridge = Bridge::new(BridgeConfig::new(
+            "ps1",
+            bus_socket.clone(),
+            right_dir.path().join("ingress.sock"),
+            right_peer_addr,
+            right_peer_addr.to_string(),
+            right_router,
+            Vec::new(),
+            Duration::from_secs(30),
+            Some("shared-pool-secret".to_string()),
+        ));
+
+        let right_server = tokio::spawn({
+            let right_bridge = right_bridge.clone();
+            let right_peer_listener = right_peer_listener;
+            async move {
+                for _ in 0..3 {
+                    let (stream, _) = right_peer_listener.accept().await.unwrap();
+                    right_bridge.handle_peer_stream(stream).await.unwrap();
+                }
+            }
+        });
+
+        let left_bridge = Bridge::new(BridgeConfig::new(
+            "ps2",
+            left_dir.path().join("bus.sock"),
+            left_dir.path().join("ingress.sock"),
+            loopback_addr(),
+            "127.0.0.1:9002",
+            Router::new(),
+            vec![right_peer_addr.to_string()],
+            Duration::from_secs(30),
+            Some("shared-pool-secret".to_string()),
+        ));
+        left_bridge
+            .sync_peer(&right_peer_addr.to_string())
+            .await
+            .unwrap();
+
+        // Register the inbox owner only after handshake so peer manifest on ps2 stays stale.
+        let right_probe_socket = right_dir.path().join("ps1-probe.sock");
+        let _right_probe_listener = UnixListener::bind(&right_probe_socket).unwrap();
+        right_bridge.config.router.register_manifest(
+            &ServiceManifest {
+                name: "ps1.probe".to_string(),
+                secret: "shared-secret".to_string(),
+                is_client: true,
+                features: BTreeMap::new(),
+                capabilities: Vec::new(),
+                modes: Vec::new(),
+            },
+            right_probe_socket,
+        );
+
+        let mut message = Envelope::new("ps2.registry", "ps1.probe.inbox", b"reply".to_vec());
+        message
+            .headers
+            .insert("protocol".to_string(), "raw".to_string());
+        message
+            .headers
+            .insert("txn_id".to_string(), "txn-inbox-stale".to_string());
+
+        left_bridge.forward_remote(message).await.unwrap();
+
+        let (mut inbound, _) = bus_listener.accept().await.unwrap();
+        let delivered = read_envelope(&mut inbound).await.unwrap();
+        right_server.abort();
+
+        assert_eq!(delivered.to, "ps1.probe.inbox");
+        assert_eq!(delivered.txn_id(), Some("txn-inbox-stale"));
     }
 
     #[tokio::test]
@@ -1065,5 +1332,56 @@ mod tests {
 
         drop(ingress_listener);
         handler.await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn local_ingress_sends_error_reply_on_forward_failure() {
+        let tempdir = tempdir().unwrap();
+        let bus_socket = tempdir.path().join("bus.sock");
+        let bus_listener = UnixListener::bind(&bus_socket).unwrap();
+        let bridge = Bridge::new(BridgeConfig::new(
+            "ps1",
+            bus_socket,
+            tempdir.path().join("ingress.sock"),
+            loopback_addr(),
+            "127.0.0.1:9001",
+            Router::new(),
+            Vec::new(),
+            Duration::from_secs(30),
+            Some("shared-pool-secret".to_string()),
+        ));
+
+        let (mut client, server) = UnixStream::pair().unwrap();
+        let handler = tokio::spawn({
+            let bridge = bridge.clone();
+            async move {
+                let mut envelope = Envelope::new("ps1.agent", "ps2.registry.list", b"{}".to_vec());
+                envelope
+                    .headers
+                    .insert("reply_to".to_string(), "ps1.agent.inbox".to_string());
+                envelope
+                    .headers
+                    .insert("txn_id".to_string(), "txn-bridge-error".to_string());
+                tlbus_core::write_envelope(&mut client, &envelope)
+                    .await
+                    .unwrap();
+
+                let error = bridge.handle_local_stream(server).await.unwrap_err();
+                assert!(matches!(
+                    error,
+                    BusError::ServiceUnavailable { service } if service == "ps2.registry"
+                ));
+            }
+        });
+
+        let (mut inbound, _) = bus_listener.accept().await.unwrap();
+        let response = read_envelope(&mut inbound).await.unwrap();
+        handler.await.unwrap();
+
+        assert_eq!(response.from, "ps2.registry");
+        assert_eq!(response.to, "ps1.agent.inbox");
+        assert_eq!(response.txn_id(), Some("txn-bridge-error"));
+        let body: Value = serde_json::from_slice(&response.payload).unwrap();
+        assert_eq!(body["error"]["code"], "service_unavailable");
     }
 }

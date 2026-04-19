@@ -1,9 +1,10 @@
 use std::path::{Path, PathBuf};
 
+use serde_json::json;
 use tlbus_core::{
     BusError, BusFrame, Envelope, Pipeline, PluginContext, Result, Router, ServiceManifest,
-    ServiceRegistrationRequest, ServiceRegistrationResponse, TargetAddress, read_frame,
-    write_envelope, write_frame,
+    ServiceRegistrationRequest, ServiceRegistrationResponse, TXN_ID_HEADER, TargetAddress,
+    read_frame, write_envelope, write_frame,
 };
 use tlbus_plugin_auth::AuthPlugin;
 use tlbus_plugin_hmac::HmacPlugin;
@@ -13,6 +14,10 @@ use tlbus_plugin_observability::ObservabilityPlugin;
 use tokio::net::{UnixListener, UnixStream};
 
 const DEFAULT_PLUGINS: &[&str] = &["lineage", "auth", "protocol"];
+const PROTOCOL_HEADER: &str = "protocol";
+const CONTENT_TYPE_HEADER: &str = "content_type";
+const CONTENT_TYPE_JSON: &str = "application/json";
+const STANDARD_PROTOCOL: &str = "standard";
 
 pub fn plugin_names_from_env(raw_value: Option<&str>, enable_hmac_by_default: bool) -> Vec<String> {
     match raw_value {
@@ -190,12 +195,15 @@ impl Daemon {
                 &message,
                 &format!("stage=validate error={error}"),
             );
+            self.try_send_error_reply(&message, &error).await;
             return Err(error);
         }
 
         if message.is_expired_at(std::time::SystemTime::now()) {
             log_envelope_event("expired", &message, "stage=ttl");
-            return Err(BusError::Expired);
+            let error = BusError::Expired;
+            self.try_send_error_reply(&message, &error).await;
+            return Err(error);
         }
 
         // One context follows the message through the whole plugin pipeline.
@@ -206,6 +214,7 @@ impl Daemon {
                 &message,
                 &format!("stage=receive error={error}"),
             );
+            self.try_send_error_reply(&message, &error).await;
             return Err(error);
         }
 
@@ -221,6 +230,7 @@ impl Daemon {
             Ok(routing) => routing,
             Err(error) => {
                 log_envelope_event("route_failed", &message, &format!("error={error}"));
+                self.try_send_error_reply(&message, &error).await;
                 return Err(error);
             }
         };
@@ -235,6 +245,7 @@ impl Daemon {
                 &message,
                 &format!("stage=route error={error}"),
             );
+            self.try_send_error_reply(&message, &error).await;
             return Err(error);
         }
         if let Some(response) = ctx.take_terminal_response() {
@@ -251,6 +262,7 @@ impl Daemon {
                 &message,
                 &format!("stage=route error={error}"),
             );
+            self.try_send_error_reply(&message, &error).await;
             return Err(error);
         }
 
@@ -267,7 +279,11 @@ impl Daemon {
                         route.display()
                     ),
                 );
-                return Err(error.into());
+                let bus_error = BusError::ServiceUnavailable {
+                    service: route_key.clone(),
+                };
+                self.try_send_error_reply(&message, &bus_error).await;
+                return Err(bus_error);
             }
         };
         if let Err(error) = write_envelope(&mut destination, &message).await {
@@ -279,7 +295,9 @@ impl Daemon {
                     route.display()
                 ),
             );
-            return Err(error);
+            let bus_error = BusError::ServiceUnavailable { service: route_key };
+            self.try_send_error_reply(&message, &bus_error).await;
+            return Err(bus_error);
         }
         log_envelope_event(
             "send",
@@ -309,6 +327,62 @@ impl Daemon {
         );
 
         Ok(())
+    }
+
+    async fn try_send_error_reply(&self, request: &Envelope, error: &BusError) {
+        let Some(reply_to) = request.reply_to().map(str::to_string) else {
+            return;
+        };
+
+        let payload = match serde_json::to_vec(&json!({
+            "error": {
+                "code": error_code_for_bus_error(error),
+                "message": error.to_string(),
+            }
+        })) {
+            Ok(payload) => payload,
+            Err(encode_error) => {
+                eprintln!(
+                    "tlbus-daemon: event=error_reply_failed {} error=json encode failed: {encode_error}",
+                    request.trace_fields()
+                );
+                return;
+            }
+        };
+
+        let mut response = Envelope::new(self.error_reply_sender(request), reply_to, payload);
+        response.ttl_ms = request.ttl_ms;
+        response
+            .headers
+            .insert(PROTOCOL_HEADER.to_string(), STANDARD_PROTOCOL.to_string());
+        response.headers.insert(
+            CONTENT_TYPE_HEADER.to_string(),
+            CONTENT_TYPE_JSON.to_string(),
+        );
+        if let Some(txn_id) = request.txn_id() {
+            response
+                .headers
+                .insert(TXN_ID_HEADER.to_string(), txn_id.to_string());
+        }
+
+        if let Err(reply_error) = Box::pin(self.process_envelope(response)).await {
+            eprintln!(
+                "tlbus-daemon: event=error_reply_failed {} error={reply_error}",
+                request.trace_fields()
+            );
+        }
+    }
+
+    fn error_reply_sender(&self, request: &Envelope) -> String {
+        TargetAddress::parse(&request.to)
+            .map(|target| target.route_key())
+            .unwrap_or_else(|_| {
+                self.config
+                    .federation
+                    .as_ref()
+                    .map(|federation| format!("{}.daemon", federation.local_pool))
+                    .unwrap_or_else(|| "daemon".to_string())
+            })
     }
     async fn handle_registration(
         &self,
@@ -460,9 +534,23 @@ fn log_envelope_event(event: &str, envelope: &Envelope, details: &str) {
     );
 }
 
+fn error_code_for_bus_error(error: &BusError) -> &'static str {
+    match error {
+        BusError::RouteNotFound { .. } => "service_not_found",
+        BusError::ServiceUnavailable { .. } => "service_unavailable",
+        BusError::Rejected { .. } => "rejected",
+        BusError::InvalidEnvelope(_) => "invalid_envelope",
+        BusError::Codec(_) => "codec_error",
+        BusError::Configuration(_) => "configuration_error",
+        BusError::Unsupported(_) => "unsupported",
+        BusError::Expired => "expired",
+        BusError::Transport(_) | BusError::Io(_) => "transport_error",
+    }
+}
+
 #[cfg(test)]
 mod tests {
-    use serde_json::from_slice;
+    use serde_json::{Value, from_slice};
     use tempfile::tempdir;
     use tlbus_core::{
         Envelope, Pipeline, Router, ServiceCapability, ServiceDescriptor, ServiceManifest,
@@ -575,6 +663,86 @@ mod tests {
         daemon_task.await.unwrap();
         assert_eq!(delivered.to, "ps2.echo.say");
         assert_eq!(delivered.payload, b"ping".to_vec());
+    }
+
+    #[tokio::test]
+    async fn daemon_replies_with_route_error_when_target_is_missing() {
+        let tempdir = tempdir().unwrap();
+        let client_socket = tempdir.path().join("client.sock");
+        let client_listener = UnixListener::bind(&client_socket).unwrap();
+        let daemon = Daemon::new(DaemonConfig::new(
+            tempdir.path().join("tlb.sock"),
+            Router::from_routes([("ps2.client", client_socket.clone())]),
+            Pipeline::default(),
+        ));
+
+        let mut request = Envelope::new("ps2.client", "ps2.missing.ping", b"{}".to_vec());
+        request
+            .headers
+            .insert("reply_to".to_string(), "ps2.client.inbox".to_string());
+        request
+            .headers
+            .insert("txn_id".to_string(), "txn-route-missing".to_string());
+
+        let error = daemon.process_envelope(request).await.unwrap_err();
+        assert!(matches!(
+            error,
+            tlbus_core::BusError::RouteNotFound { service } if service == "ps2.missing"
+        ));
+
+        let (mut inbound_stream, _) = client_listener.accept().await.unwrap();
+        let response = read_envelope(&mut inbound_stream).await.unwrap();
+        assert_eq!(response.from, "ps2.missing");
+        assert_eq!(response.to, "ps2.client.inbox");
+        assert_eq!(response.txn_id(), Some("txn-route-missing"));
+
+        let payload: Value = from_slice(&response.payload).unwrap();
+        assert_eq!(payload["error"]["code"], "service_not_found");
+    }
+
+    #[tokio::test]
+    async fn daemon_replies_with_service_unavailable_when_service_socket_is_down() {
+        let tempdir = tempdir().unwrap();
+        let client_socket = tempdir.path().join("client.sock");
+        let client_listener = UnixListener::bind(&client_socket).unwrap();
+        let dead_service_socket = tempdir.path().join("ticket.sock");
+
+        let daemon = Daemon::new(DaemonConfig::new(
+            tempdir.path().join("tlb.sock"),
+            Router::from_routes([
+                ("ps2.client", client_socket.clone()),
+                ("ps2.ticket", dead_service_socket),
+            ]),
+            Pipeline::default(),
+        ));
+
+        let mut request = Envelope::new("ps2.client", "ps2.ticket.tools", b"{}".to_vec());
+        request
+            .headers
+            .insert("reply_to".to_string(), "ps2.client.inbox".to_string());
+        request
+            .headers
+            .insert("txn_id".to_string(), "txn-service-down".to_string());
+
+        let error = daemon.process_envelope(request).await.unwrap_err();
+        assert!(matches!(
+            error,
+            tlbus_core::BusError::ServiceUnavailable { service } if service == "ps2.ticket"
+        ));
+
+        let (mut inbound_stream, _) = client_listener.accept().await.unwrap();
+        let response = read_envelope(&mut inbound_stream).await.unwrap();
+        assert_eq!(response.from, "ps2.ticket");
+        assert_eq!(response.to, "ps2.client.inbox");
+        assert_eq!(response.txn_id(), Some("txn-service-down"));
+
+        let payload: Value = from_slice(&response.payload).unwrap();
+        assert_eq!(payload["error"]["code"], "service_unavailable");
+        let route_error = daemon.config.router.resolve("ps2.ticket").unwrap_err();
+        assert!(matches!(
+            route_error,
+            tlbus_core::BusError::ServiceUnavailable { service } if service == "ps2.ticket"
+        ));
     }
 
     #[tokio::test]
