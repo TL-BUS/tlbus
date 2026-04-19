@@ -97,6 +97,15 @@ impl Router {
             .collect()
     }
 
+    pub fn manifest(&self) -> Vec<ServiceDescriptor> {
+        self.routes
+            .read()
+            .expect("router read lock poisoned")
+            .values()
+            .map(|record| record.descriptor.clone())
+            .collect()
+    }
+
     pub fn resolve(&self, service: &str) -> Result<PathBuf> {
         let record = self
             .routes
@@ -213,5 +222,41 @@ mod tests {
         assert_eq!(manifest.len(), 1);
         assert_eq!(manifest[0].service, "ps1.calcola");
         assert_eq!(manifest[0].capabilities[0].name, "manifest");
+    }
+
+    #[test]
+    fn manifest_returns_all_registered_services() {
+        let router = Router::new();
+        router.register_manifest(
+            &ServiceManifest {
+                name: "ps1.echo".to_string(),
+                secret: "shared-secret".to_string(),
+                is_client: false,
+                features: BTreeMap::new(),
+                capabilities: Vec::new(),
+                modes: Vec::new(),
+            },
+            PathBuf::from("/tmp/echo.sock"),
+        );
+        router.register_manifest(
+            &ServiceManifest {
+                name: "ps2.somma".to_string(),
+                secret: "shared-secret".to_string(),
+                is_client: false,
+                features: BTreeMap::new(),
+                capabilities: Vec::new(),
+                modes: Vec::new(),
+            },
+            PathBuf::from("/tmp/somma.sock"),
+        );
+
+        let mut services = router
+            .manifest()
+            .into_iter()
+            .map(|descriptor| descriptor.service)
+            .collect::<Vec<_>>();
+        services.sort();
+
+        assert_eq!(services, vec!["ps1.echo", "ps2.somma"]);
     }
 }

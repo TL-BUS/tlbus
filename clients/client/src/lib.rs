@@ -10,8 +10,9 @@ use std::time::{Duration, Instant};
 
 use serde_json::Value;
 use tlbus_core::{
-    BusError, BusFrame, Envelope, Result, ServiceCapability, ServiceManifest, ServiceMode,
-    TXN_ID_HEADER, read_frame_sync, register_service_sync, write_frame_sync,
+    BusError, BusFrame, Envelope, PoolManifest, REPLY_TO_HEADER, RegistryListResponse, Result,
+    ServiceCapability, ServiceDescriptor, ServiceManifest, ServiceMode, TXN_ID_HEADER,
+    read_frame_sync, register_service_sync, write_frame_sync,
 };
 use uuid::Uuid;
 
@@ -19,6 +20,12 @@ pub const DEFAULT_BUS_SOCKET: &str = "/run/tlb.sock";
 pub const DEFAULT_TRANSPORT: &str = "tl-bus";
 pub const DEFAULT_PROTOCOL: &str = "standard";
 pub const DEFAULT_CONTENT_TYPE: &str = "application/json";
+pub const DISCOVERY_SERVICE_NAME: &str = "__tlbus__";
+pub const DISCOVERY_SERVICES_ACTION: &str = "services";
+pub const REGISTRY_SERVICE_NAME: &str = "registry";
+pub const REGISTRY_LIST_ACTION: &str = "list";
+pub const REGISTRY_GET_MANIFEST_ACTION: &str = "get_manifest";
+pub const REGISTRY_GET_PROTOCOL_MANIFEST_ACTION: &str = "get_protocol_manifest";
 
 const ACCEPT_RETRY_SLEEP: Duration = Duration::from_millis(50);
 const DEFAULT_WORKER_TIMEOUT: Duration = Duration::from_secs(20);
@@ -166,35 +173,135 @@ impl Endpoint {
     }
 
     pub fn receive_once(&self, timeout: Duration) -> Result<Envelope> {
-        if let Some(parent) = self.service_socket.parent() {
-            fs::create_dir_all(parent)?;
-        }
-        remove_file_if_present(&self.service_socket)?;
-        let _cleanup_guard = SocketCleanup::new(self.service_socket.clone());
+        let (listener, _cleanup_guard) = bind_inbox_listener(&self.service_socket)?;
+        wait_for_envelope(&listener, timeout, &self.service_socket)
+    }
 
-        let listener = UnixListener::bind(&self.service_socket)?;
-        listener.set_nonblocking(true)?;
-        let deadline = Instant::now() + timeout;
-
-        loop {
-            match listener.accept() {
-                Ok((mut stream, _addr)) => {
-                    stream.set_read_timeout(Some(timeout))?;
-                    let frame = read_frame_sync(&mut stream)?;
-                    return frame.into_envelope();
-                }
-                Err(error) if error.kind() == ErrorKind::WouldBlock => {
-                    if Instant::now() >= deadline {
-                        return Err(BusError::Transport(format!(
-                            "timed out while waiting for incoming envelope on {}",
-                            self.service_socket.display()
-                        )));
-                    }
-                    thread::sleep(ACCEPT_RETRY_SLEEP);
-                }
-                Err(error) => return Err(error.into()),
-            }
+    pub fn discover_pool_manifest(&self, pool: &str, timeout: Duration) -> Result<PoolManifest> {
+        if pool.trim().is_empty() {
+            return Err(BusError::Configuration(
+                "pool must not be empty".to_string(),
+            ));
         }
+
+        let target = format!("{pool}.{DISCOVERY_SERVICE_NAME}.{DISCOVERY_SERVICES_ACTION}");
+        let response = self.request_bytes(&target, b"{}".to_vec(), BTreeMap::new(), timeout)?;
+        serde_json::from_slice(&response.payload)
+            .map_err(|error| BusError::Codec(format!("json decode failed: {error}")))
+    }
+
+    pub fn discover_service_manifest(
+        &self,
+        service: &str,
+        timeout: Duration,
+    ) -> Result<ServiceDescriptor> {
+        if service.trim().is_empty() {
+            return Err(BusError::Configuration(
+                "service must not be empty".to_string(),
+            ));
+        }
+
+        let target = format!("{service}.manifest");
+        let response = self.request_bytes(&target, b"{}".to_vec(), BTreeMap::new(), timeout)?;
+        serde_json::from_slice(&response.payload)
+            .map_err(|error| BusError::Codec(format!("json decode failed: {error}")))
+    }
+
+    pub fn discover_services(
+        &self,
+        pool: &str,
+        timeout: Duration,
+    ) -> Result<Vec<ServiceDescriptor>> {
+        Ok(self.discover_pool_manifest(pool, timeout)?.services)
+    }
+
+    pub fn discover_registry_services(
+        &self,
+        timeout: Duration,
+    ) -> Result<Vec<tlbus_core::RegistryService>> {
+        let response = self.request_registry(
+            REGISTRY_LIST_ACTION,
+            Value::Object(Default::default()),
+            timeout,
+        )?;
+        let payload: RegistryListResponse = serde_json::from_slice(&response.payload)
+            .map_err(|error| BusError::Codec(format!("json decode failed: {error}")))?;
+        Ok(payload.services)
+    }
+
+    pub fn discover_registry_manifest(
+        &self,
+        service: &str,
+        timeout: Duration,
+    ) -> Result<tlbus_core::RegistryServiceManifest> {
+        if service.trim().is_empty() {
+            return Err(BusError::Configuration(
+                "service must not be empty".to_string(),
+            ));
+        }
+
+        let response = self.request_registry(
+            REGISTRY_GET_MANIFEST_ACTION,
+            serde_json::json!({ "service": service }),
+            timeout,
+        )?;
+        serde_json::from_slice(&response.payload)
+            .map_err(|error| BusError::Codec(format!("json decode failed: {error}")))
+    }
+
+    pub fn discover_registry_protocol_manifest(
+        &self,
+        service: &str,
+        protocol: &str,
+        timeout: Duration,
+    ) -> Result<Value> {
+        if service.trim().is_empty() {
+            return Err(BusError::Configuration(
+                "service must not be empty".to_string(),
+            ));
+        }
+        if protocol.trim().is_empty() {
+            return Err(BusError::Configuration(
+                "protocol must not be empty".to_string(),
+            ));
+        }
+
+        let response = self.request_registry(
+            REGISTRY_GET_PROTOCOL_MANIFEST_ACTION,
+            serde_json::json!({ "service": service, "protocol": protocol }),
+            timeout,
+        )?;
+        serde_json::from_slice(&response.payload)
+            .map_err(|error| BusError::Codec(format!("json decode failed: {error}")))
+    }
+
+    fn request_bytes(
+        &self,
+        target: &str,
+        payload: Vec<u8>,
+        mut headers: BTreeMap<String, String>,
+        timeout: Duration,
+    ) -> Result<Envelope> {
+        let reply_to = format!("{}.inbox", self.service_name());
+        headers
+            .entry(REPLY_TO_HEADER.to_string())
+            .or_insert(reply_to);
+
+        let (listener, _cleanup_guard) = bind_inbox_listener(&self.service_socket)?;
+        self.send_bytes(target, payload, headers)?;
+        wait_for_envelope(&listener, timeout, &self.service_socket)
+    }
+
+    fn request_registry(
+        &self,
+        action: &str,
+        payload: Value,
+        timeout: Duration,
+    ) -> Result<Envelope> {
+        let target = format!("{REGISTRY_SERVICE_NAME}.{action}");
+        let payload = serde_json::to_vec(&payload)
+            .map_err(|error| BusError::Configuration(format!("invalid JSON payload: {error}")))?;
+        self.request_bytes(&target, payload, BTreeMap::new(), timeout)
     }
 }
 
@@ -392,11 +499,56 @@ impl Drop for SocketCleanup {
     }
 }
 
+fn bind_inbox_listener(socket_path: &Path) -> Result<(UnixListener, SocketCleanup)> {
+    if let Some(parent) = socket_path.parent() {
+        fs::create_dir_all(parent)?;
+    }
+    remove_file_if_present(socket_path)?;
+    let cleanup_guard = SocketCleanup::new(socket_path.to_path_buf());
+
+    let listener = UnixListener::bind(socket_path)?;
+    listener.set_nonblocking(true)?;
+    Ok((listener, cleanup_guard))
+}
+
+fn wait_for_envelope(
+    listener: &UnixListener,
+    timeout: Duration,
+    socket_path: &Path,
+) -> Result<Envelope> {
+    let deadline = Instant::now() + timeout;
+    loop {
+        match listener.accept() {
+            Ok((mut stream, _addr)) => {
+                let frame = read_frame_sync(&mut stream)?;
+                return frame.into_envelope();
+            }
+            Err(error) if error.kind() == ErrorKind::WouldBlock => {
+                if Instant::now() >= deadline {
+                    return Err(BusError::Transport(format!(
+                        "timed out while waiting for incoming envelope on {}",
+                        socket_path.display()
+                    )));
+                }
+                thread::sleep(ACCEPT_RETRY_SLEEP);
+            }
+            Err(error) => return Err(error.into()),
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
+    use std::collections::BTreeMap;
+    use std::path::Path;
     use std::time::Duration;
 
-    use super::{WorkerLoopConfig, map_remote_socket_path, parse_header_pairs};
+    use tempfile::tempdir;
+    use tlbus_core::{ServiceCapability, ServiceManifest, ServiceMode, register_service};
+    use tlbus_daemon::{Daemon, DaemonConfig, FederationConfig, build_pipeline};
+    use tokio::time::sleep;
+
+    use super::{EndpointConfig, WorkerLoopConfig, map_remote_socket_path, parse_header_pairs};
 
     #[test]
     fn maps_remote_socket_path_to_local_mount() {
@@ -431,5 +583,127 @@ mod tests {
         assert_eq!(config.capability_name, "handle");
         assert_eq!(config.capability_address, "ps1.worker.handle");
         assert_eq!(config.timeout, Duration::from_secs(20));
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn endpoint_discovers_pool_and_service_manifests() {
+        let tempdir = tempdir().unwrap();
+        let bus_socket = tempdir.path().join("tlb.sock");
+
+        let router = tlbus_core::Router::new();
+        let pipeline = build_pipeline(
+            router.clone(),
+            &["protocol".to_string()],
+            None,
+            Some("ps2".to_string()),
+        )
+        .unwrap();
+        let daemon = Daemon::new(
+            DaemonConfig::new(bus_socket.clone(), router, pipeline)
+                .with_service_socket_dir(tempdir.path())
+                .with_service_secret(Some("shared-secret".to_string()))
+                .with_federation(FederationConfig {
+                    local_pool: "ps2".to_string(),
+                    bridge_socket: tempdir.path().join("tlbnet.sock"),
+                }),
+        );
+
+        let task = tokio::spawn({
+            let daemon = daemon.clone();
+            async move { daemon.serve().await }
+        });
+
+        wait_for_socket(&bus_socket).await;
+
+        register_service(
+            &bus_socket,
+            ServiceManifest {
+                name: "ps2.echo".to_string(),
+                secret: "shared-secret".to_string(),
+                is_client: false,
+                features: BTreeMap::new(),
+                capabilities: vec![ServiceCapability {
+                    name: "echo".to_string(),
+                    address: "ps2.echo.say".to_string(),
+                    description: "Echoes the incoming payload".to_string(),
+                }],
+                modes: vec![ServiceMode {
+                    transport: "http2".to_string(),
+                    protocol: "mcp".to_string(),
+                    protocol_version: Some("2025-06-18".to_string()),
+                    content_type: Some("application/json".to_string()),
+                }],
+            },
+        )
+        .await
+        .unwrap();
+
+        let endpoint = EndpointConfig::new("ps2.client", "shared-secret")
+            .with_bus_socket(bus_socket.clone())
+            .register()
+            .unwrap();
+
+        let pool_manifest = endpoint
+            .discover_pool_manifest("ps2", Duration::from_secs(2))
+            .unwrap();
+        assert_eq!(pool_manifest.pool, "ps2");
+        assert!(
+            pool_manifest
+                .services
+                .iter()
+                .any(|service| service.service == "ps2.echo")
+        );
+
+        let service_manifest = endpoint
+            .discover_service_manifest("ps2.echo", Duration::from_secs(2))
+            .unwrap();
+        assert_eq!(service_manifest.service, "ps2.echo");
+        assert!(service_manifest.service_capability("echo").is_some());
+        assert!(service_manifest.supports_mode("http2", "mcp").is_some());
+
+        let registry_services = endpoint
+            .discover_registry_services(Duration::from_secs(2))
+            .unwrap();
+        assert!(
+            registry_services
+                .iter()
+                .any(|service| service.name == "echo")
+        );
+
+        let registry_manifest = endpoint
+            .discover_registry_manifest("echo", Duration::from_secs(2))
+            .unwrap();
+        assert_eq!(registry_manifest.name, "echo");
+        assert!(
+            registry_manifest
+                .capabilities
+                .iter()
+                .any(|capability| capability == "echo.say")
+        );
+        assert!(
+            registry_manifest
+                .protocols
+                .iter()
+                .any(|protocol| protocol == "mcp")
+        );
+
+        let protocol_manifest = endpoint
+            .discover_registry_protocol_manifest("echo", "mcp", Duration::from_secs(2))
+            .unwrap();
+        assert_eq!(protocol_manifest["service"], "echo");
+        assert_eq!(protocol_manifest["protocol"], "mcp");
+        assert!(protocol_manifest["manifest"]["modes"].is_array());
+
+        task.abort();
+    }
+
+    async fn wait_for_socket(path: &Path) {
+        for _ in 0..40 {
+            if path.exists() {
+                return;
+            }
+            sleep(Duration::from_millis(50)).await;
+        }
+        panic!("socket `{}` was not created in time", path.display());
     }
 }

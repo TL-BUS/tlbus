@@ -81,7 +81,7 @@ async fn run() -> Result<()> {
     );
 
     let router = Router::from_routes(routes);
-    let pipeline = build_pipeline(router.clone(), &plugin_names, hmac_key)?;
+    let pipeline = build_pipeline(router.clone(), &plugin_names, hmac_key, local_pool.clone())?;
 
     let mut config = DaemonConfig::new(listen_path, router, pipeline)
         .with_service_secret(env::var("TLB_SERVICE_SECRET").ok());

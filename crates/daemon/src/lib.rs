@@ -39,6 +39,7 @@ pub fn build_pipeline(
     router: Router,
     plugin_names: &[String],
     hmac_key: Option<Vec<u8>>,
+    local_pool: Option<String>,
 ) -> Result<Pipeline> {
     let mut pipeline = Pipeline::default();
 
@@ -59,7 +60,10 @@ pub fn build_pipeline(
                         })?;
                 pipeline.add(HmacPlugin::new(shared_key));
             }
-            "protocol" | "manifest" => pipeline.add(ProtocolPlugin::new(router.clone())),
+            "protocol" | "manifest" => pipeline.add(ProtocolPlugin::with_local_pool(
+                router.clone(),
+                local_pool.clone(),
+            )),
             "observability" => pipeline.add(ObservabilityPlugin::new()?),
             other => {
                 return Err(BusError::Configuration(format!(
@@ -630,7 +634,8 @@ mod tests {
         let client_socket = tempdir.path().join("client.sock");
         let client_listener = UnixListener::bind(&client_socket).unwrap();
         let router = Router::from_routes([("ps2.client", client_socket.clone())]);
-        let pipeline = build_pipeline(router.clone(), &["protocol".to_string()], None).unwrap();
+        let pipeline =
+            build_pipeline(router.clone(), &["protocol".to_string()], None, None).unwrap();
         let daemon = Daemon::new(
             DaemonConfig::new(tempdir.path().join("tlb.sock"), router, pipeline)
                 .with_service_socket_dir(tempdir.path())

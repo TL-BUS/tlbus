@@ -52,6 +52,43 @@ pub struct ServiceDescriptor {
     pub modes: Vec<ServiceMode>,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct RegistryService {
+    pub name: String,
+    #[serde(default)]
+    pub capabilities: Vec<String>,
+    #[serde(default)]
+    pub protocols: Vec<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct RegistryListResponse {
+    #[serde(default)]
+    pub services: Vec<RegistryService>,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct RegistryServiceManifest {
+    pub name: String,
+    #[serde(default)]
+    pub capabilities: Vec<String>,
+    #[serde(default)]
+    pub protocols: Vec<String>,
+    #[serde(default)]
+    pub protocol_manifests: BTreeMap<String, serde_json::Value>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct RegistryManifestRequest {
+    pub service: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct RegistryProtocolManifestRequest {
+    pub service: String,
+    pub protocol: String,
+}
+
 impl ServiceManifest {
     pub fn descriptor(&self) -> ServiceDescriptor {
         ServiceDescriptor {
@@ -76,6 +113,57 @@ impl ServiceDescriptor {
         self.modes
             .iter()
             .find(|mode| mode.transport == transport && mode.protocol == protocol)
+    }
+
+    pub fn registry_capabilities(&self) -> Vec<String> {
+        let short_service = short_service_name(&self.service);
+        let service_prefix = format!("{}.", self.service);
+        let mut capabilities = self
+            .capabilities
+            .iter()
+            .filter_map(|capability| {
+                let capability_address = capability.address.trim();
+                if capability.name == "manifest" || capability_address.ends_with(".manifest") {
+                    return None;
+                }
+
+                if !capability_address.is_empty() {
+                    if let Some(action) = capability_address.strip_prefix(&service_prefix) {
+                        return Some(format!("{short_service}.{action}"));
+                    }
+                    return Some(capability.address.clone());
+                }
+
+                if capability.name.trim().is_empty() {
+                    return None;
+                }
+
+                Some(format!("{short_service}.{}", capability.name))
+            })
+            .collect::<Vec<_>>();
+        capabilities.sort();
+        capabilities.dedup();
+        capabilities
+    }
+
+    pub fn registry_protocols(&self) -> Vec<String> {
+        let mut protocols = self
+            .modes
+            .iter()
+            .map(|mode| mode.protocol.clone())
+            .filter(|protocol| !protocol.trim().is_empty())
+            .collect::<Vec<_>>();
+        protocols.sort();
+        protocols.dedup();
+        protocols
+    }
+
+    pub fn registry_service(&self) -> RegistryService {
+        RegistryService {
+            name: short_service_name(&self.service).to_string(),
+            capabilities: self.registry_capabilities(),
+            protocols: self.registry_protocols(),
+        }
     }
 }
 
@@ -112,6 +200,10 @@ fn descriptor_capabilities(
     }
 
     descriptor_capabilities
+}
+
+fn short_service_name(service: &str) -> &str {
+    service.rsplit('.').next().unwrap_or(service)
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -234,5 +326,46 @@ mod tests {
         assert!(descriptor.service_capability("calculate").is_some());
         assert!(descriptor.service_capability("manifest").is_some());
         assert!(descriptor.supports_mode("http2", "mcp").is_some());
+    }
+
+    #[test]
+    fn registry_metadata_excludes_builtin_manifest_and_normalizes_addresses() {
+        let descriptor = ServiceManifest {
+            name: "ps2.invoice".to_string(),
+            secret: "shared-secret".to_string(),
+            is_client: false,
+            features: BTreeMap::new(),
+            capabilities: vec![
+                ServiceCapability {
+                    name: "create".to_string(),
+                    address: "ps2.invoice.create".to_string(),
+                    description: "Creates invoices".to_string(),
+                },
+                ServiceCapability {
+                    name: "manifest".to_string(),
+                    address: "ps2.invoice.manifest".to_string(),
+                    description: "Built-in manifest endpoint".to_string(),
+                },
+            ],
+            modes: vec![
+                ServiceMode {
+                    transport: "http2".to_string(),
+                    protocol: "mcp".to_string(),
+                    protocol_version: Some("2025-06-18".to_string()),
+                    content_type: Some("application/json".to_string()),
+                },
+                ServiceMode {
+                    transport: "http1".to_string(),
+                    protocol: "rest-api".to_string(),
+                    protocol_version: None,
+                    content_type: Some("application/json".to_string()),
+                },
+            ],
+        }
+        .descriptor();
+
+        assert_eq!(descriptor.registry_service().name, "invoice");
+        assert_eq!(descriptor.registry_capabilities(), vec!["invoice.create"]);
+        assert_eq!(descriptor.registry_protocols(), vec!["mcp", "rest-api"]);
     }
 }

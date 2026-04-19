@@ -29,6 +29,9 @@ cargo run -p tlbus-client -- send \
 
 Service discovery is manifest-driven. A service describes its capabilities and modes, and the protocol plugin can answer `*.manifest` requests from that registry data.
 
+To enumerate services registered in a pool, use the reserved target `<pool>.__tlbus__.services` (it returns a `PoolManifest`).
+From there you can query each service descriptor with `<pool>.<service>.manifest`.
+
 ## 5. Explore federation
 
 Use the sidecar and bridge when a message must leave the local pool.

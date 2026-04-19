@@ -90,7 +90,7 @@ impl Sidecar {
         } = config;
 
         let router = Router::from_routes(routes);
-        let pipeline = build_pipeline(router.clone(), &plugin_names, hmac_key)?;
+        let pipeline = build_pipeline(router.clone(), &plugin_names, hmac_key, Some(pool.clone()))?;
         let daemon = Daemon::new(
             DaemonConfig::new(bus_socket.clone(), router.clone(), pipeline)
                 .with_service_socket_dir(service_socket_dir)

@@ -16,9 +16,11 @@ pub use codec::{
 pub use envelope::{Envelope, REPLY_TO_HEADER, TXN_ID_HEADER};
 pub use error::{BusError, Result};
 pub use frame::{
-    BusFrame, PoolHandshakeRequest, PoolHandshakeResponse, PoolManifest, ServiceCapability,
-    ServiceDescriptor, ServiceManifest, ServiceMode, ServiceRegistrationRequest,
-    ServiceRegistrationResponse, register_service, register_service_sync,
+    BusFrame, PoolHandshakeRequest, PoolHandshakeResponse, PoolManifest, RegistryListResponse,
+    RegistryManifestRequest, RegistryProtocolManifestRequest, RegistryService,
+    RegistryServiceManifest, ServiceCapability, ServiceDescriptor, ServiceManifest, ServiceMode,
+    ServiceRegistrationRequest, ServiceRegistrationResponse, register_service,
+    register_service_sync,
 };
 pub use pipeline::Pipeline;
 pub use plugin::{Plugin, PluginContext, PluginStage};

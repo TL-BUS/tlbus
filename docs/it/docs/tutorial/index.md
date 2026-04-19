@@ -29,6 +29,9 @@ cargo run -p tlbus-client -- send \
 
 La discovery dei servizi e` guidata dai manifest. Un servizio descrive capability e modes, e il plugin protocol puo' rispondere alle richieste `*.manifest` usando quei dati.
 
+Per elencare i servizi registrati in un pool usa il target riservato `<pool>.__tlbus__.services` (risposta `PoolManifest`).
+Da li' puoi interrogare il manifest puntuale di ciascun servizio con `<pool>.<service>.manifest`.
+
 ## 5. Prova la federation
 
 Usa sidecar e bridge quando un messaggio deve uscire dal pool locale.

@@ -8,3 +8,8 @@ license.workspace = true
 serde_json.workspace = true
 tlbus-core = { path = "../../crates/core" }
 uuid.workspace = true
+
+[dev-dependencies]
+tempfile.workspace = true
+tlbus-daemon = { path = "../../crates/daemon" }
+tokio.workspace = true
