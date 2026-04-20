@@ -639,9 +639,7 @@ mod tests {
         .await
         .unwrap();
         let echo_listener = UnixListener::bind(&echo_registration.service_socket).unwrap();
-        let echo_task = tokio::spawn(async move {
-            while echo_listener.accept().await.is_ok() {}
-        });
+        let echo_task = tokio::spawn(async move { while echo_listener.accept().await.is_ok() {} });
 
         let endpoint = EndpointConfig::new("ps2.client", "shared-secret")
             .with_bus_socket(bus_socket.clone())
