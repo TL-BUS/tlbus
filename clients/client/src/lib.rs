@@ -546,6 +546,7 @@ mod tests {
     use tempfile::tempdir;
     use tlbus_core::{ServiceCapability, ServiceManifest, ServiceMode, register_service};
     use tlbus_daemon::{Daemon, DaemonConfig, FederationConfig, build_pipeline};
+    use tokio::net::UnixListener;
     use tokio::time::sleep;
 
     use super::{EndpointConfig, WorkerLoopConfig, map_remote_socket_path, parse_header_pairs};
@@ -615,7 +616,7 @@ mod tests {
 
         wait_for_socket(&bus_socket).await;
 
-        register_service(
+        let echo_registration = register_service(
             &bus_socket,
             ServiceManifest {
                 name: "ps2.echo".to_string(),
@@ -637,6 +638,10 @@ mod tests {
         )
         .await
         .unwrap();
+        let echo_listener = UnixListener::bind(&echo_registration.service_socket).unwrap();
+        let echo_task = tokio::spawn(async move {
+            while echo_listener.accept().await.is_ok() {}
+        });
 
         let endpoint = EndpointConfig::new("ps2.client", "shared-secret")
             .with_bus_socket(bus_socket.clone())
@@ -694,6 +699,7 @@ mod tests {
         assert_eq!(protocol_manifest["protocol"], "mcp");
         assert!(protocol_manifest["manifest"]["modes"].is_array());
 
+        echo_task.abort();
         task.abort();
     }
 
